@@ -116,3 +116,20 @@ If candidates are missing `center_atom_xyz_stub_f32` (or meta is missing `atom_o
 Current behavior:
 - `scripts/99_harness/01_mtx_determinism_regression.py` treats this as an error unless `--allow-backbone-only` is passed.
 - `scripts/05_solver/01_solve_motif.py` now raises if full-atom reconstruction inputs are missing (prevents silent “everything looks like Ala” outputs).
+
+## 11) Sidechain-only satisfaction reduces “hard-to-realize” backbone hbonds
+
+If we allow backbone `N` (donor) / backbone `O` (acceptor) to satisfy ligand polar atoms, then **almost any residue** can satisfy constraints via its backbone, often producing motifs whose sidechains do not point into the pocket.
+
+MVP workaround:
+- `scripts/04_candidates/01_generate_candidates.py` defaults to *sidechain-only* satisfaction by excluding backbone `N/O` from donor/acceptor atom sets.
+- You can re-enable backbone hbonds with `--allow-backbone-hbonds` if desired.
+
+## 12) Excluding amino acids early (PRO/CYS) is easiest at candidate generation
+
+For ligand-centric polar motifs, some amino acids are often undesirable for practical reasons:
+- `PRO` is structurally constrained and often hard to accommodate in a pocket as a designed motif residue.
+- `CYS` can complicate expression/handling and downstream design choices.
+
+MVP:
+- `scripts/04_candidates/01_generate_candidates.py` adds `--exclude-aa3` (default `PRO,CYS`).

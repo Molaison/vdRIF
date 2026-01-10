@@ -245,6 +245,17 @@ def main() -> None:
     ap.add_argument("--chunk-size", type=int, default=5000)
     ap.add_argument("--top-per-site", type=int, default=2000)
     ap.add_argument("--clash-tol", type=float, default=0.5)
+    ap.add_argument(
+        "--allow-backbone-hbonds",
+        action="store_true",
+        help="Allow backbone N/O atoms to satisfy ligand polar atoms. Default is sidechain-only satisfaction.",
+    )
+    ap.add_argument(
+        "--exclude-aa3",
+        type=str,
+        default="PRO,CYS",
+        help="Comma-separated 3-letter amino acids to exclude (default: PRO,CYS).",
+    )
     ap.add_argument("--require-full-coverage", action="store_true")
     args = ap.parse_args()
 
@@ -304,6 +315,9 @@ def main() -> None:
     acceptor_atoms = {"O", "OD1", "OD2", "OE1", "OE2", "OG", "OG1", "OH", "ND1", "NE2", "SD", "SG"}
     cation_atoms = {"NZ", "NH1", "NH2"}
     anion_atoms = {"OD1", "OD2", "OE1", "OE2"}
+    backbone_atoms = {"N", "C", "O", "CA"}
+
+    exclude_aa3 = {x.strip().upper() for x in str(args.exclude_aa3).split(",") if x.strip()}
 
     for site in sites:
         # Only polar atoms explicitly associated with this ligand site-frame are considered coverable from it.
@@ -350,8 +364,13 @@ def main() -> None:
         def atom_indices(names: set[str]) -> list[int]:
             return [i for i, nm in enumerate(atom_order) if nm in names]
 
-        donor_idx = atom_indices(donor_atoms)
-        acceptor_idx = atom_indices(acceptor_atoms)
+        if args.allow_backbone_hbonds:
+            donor_idx = atom_indices(donor_atoms)
+            acceptor_idx = atom_indices(acceptor_atoms)
+        else:
+            # Sidechain-only: exclude backbone N/O so nonpolar residues can't satisfy by backbone alone.
+            donor_idx = atom_indices({nm for nm in donor_atoms if nm not in backbone_atoms})
+            acceptor_idx = atom_indices({nm for nm in acceptor_atoms if nm not in backbone_atoms})
         cation_idx = atom_indices(cation_atoms)
         anion_idx = atom_indices(anion_atoms)
 
@@ -459,6 +478,8 @@ def main() -> None:
             # For each passing candidate, compute which polar atoms it truly satisfies.
             for ii, idx_local in enumerate(ok_local.tolist()):
                 idx = start + idx_local
+                if str(aa_arr[idx]).upper() in exclude_aa3:
+                    continue
                 cov = 0
                 for _an, bit, roles, pxyz in site_polar:
                     need = _needed_roles(roles)

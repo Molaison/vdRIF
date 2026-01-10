@@ -117,6 +117,8 @@ def main() -> None:
                 str(args.top_per_site),
                 "--clash-tol",
                 "0.5",
+                "--exclude-aa3",
+                "PRO,CYS",
                 "--require-full-coverage",
             ]
         )
