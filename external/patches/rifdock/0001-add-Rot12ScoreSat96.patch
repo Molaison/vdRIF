@@ -1,0 +1,102 @@
+From 55368a8b1a32ea19dd5160833ce819d43c5780fb Mon Sep 17 00:00:00 2001
+From: molaison_cluster <sub2pro@foxmail.com>
+Date: Sat, 10 Jan 2026 17:38:17 +0800
+Subject: [PATCH] Add Rot12ScoreSat96 rif_type (4096 rotamer ids)
+
+---
+ apps/rosetta/riflib/RifFactory.cc | 61 ++++++++++++++++++++-----------
+ data/example_flags/rifgen.flag    |  2 +-
+ 2 files changed, 40 insertions(+), 23 deletions(-)
+
+diff --git a/apps/rosetta/riflib/RifFactory.cc b/apps/rosetta/riflib/RifFactory.cc
+index 0e5f3a6..a337595 100644
+--- a/apps/rosetta/riflib/RifFactory.cc
++++ b/apps/rosetta/riflib/RifFactory.cc
+@@ -2809,28 +2809,45 @@ create_rif_factory( RifFactoryConfig const & config )
+ 
+         return make_shared< RifFactoryImpl<crfXMap> >( config );
+     }
+-	else if( config.rif_type == "RotScoreSat_1x16" )
+-	{
+-		using SatDatum = ::scheme::objective::storage::SatisfactionDatum<uint16_t>;
+-		typedef ::scheme::objective::storage::RotamerScoreSat<
+-					uint16_t, 9, -13, SatDatum, 1> crfRotScore;
+-		typedef ::scheme::objective::storage::RotamerScores< 14, crfRotScore > crfXMapValue;
+-		BOOST_STATIC_ASSERT( sizeof( crfXMapValue ) == 56 );
+-		typedef ::scheme::objective::hash::XformMap<
+-				EigenXform,
+-				crfXMapValue,
+-				::scheme::objective::hash::XformHash_bt24_BCC6
+-			> crfXMap;
+-		BOOST_STATIC_ASSERT( sizeof( crfXMap::Map::value_type ) == 64 );
+-
+-		return make_shared< RifFactoryImpl<crfXMap> >( config );
+-
+-	} 
+-	else if( config.rif_type == "Rot10Score6Sat16" )
+-	{
+-		typedef ::scheme::objective::storage::RotamerScoreSat<uint16_t, 10, -4> crfRotScore;
+-		typedef ::scheme::objective::storage::RotamerScores< 14, crfRotScore > crfXMapValue;
+-		BOOST_STATIC_ASSERT( sizeof( crfXMapValue ) == 56 );
++		else if( config.rif_type == "RotScoreSat_1x16" )
++		{
++			using SatDatum = ::scheme::objective::storage::SatisfactionDatum<uint16_t>;
++			typedef ::scheme::objective::storage::RotamerScoreSat<
++						uint16_t, 9, -13, SatDatum, 1> crfRotScore;
++			typedef ::scheme::objective::storage::RotamerScores< 14, crfRotScore > crfXMapValue;
++			BOOST_STATIC_ASSERT( sizeof( crfXMapValue ) == 56 );
++			typedef ::scheme::objective::hash::XformMap<
++					EigenXform,
++					crfXMapValue,
++					::scheme::objective::hash::XformHash_bt24_BCC6
++				> crfXMap;
++			BOOST_STATIC_ASSERT( sizeof( crfXMap::Map::value_type ) == 64 );
++	
++			return make_shared< RifFactoryImpl<crfXMap> >( config );
++	
++		} 
++		else if( config.rif_type == "Rot12ScoreSat96" )
++		{
++			// 12-bit rotamer ids (4096) for large libraries (e.g., vdM clusters).
++			// Use 32-bit packed storage so score has sufficient dynamic range:
++			// ScoreBits = 32 - 12 = 20.
++			typedef ::scheme::objective::storage::RotamerScoreSat<uint32_t, 12, -13> crfRotScore;
++			typedef ::scheme::objective::storage::RotamerScores< 14, crfRotScore > crfXMapValue;
++			BOOST_STATIC_ASSERT( sizeof( crfXMapValue ) == 84 );
++			typedef ::scheme::objective::hash::XformMap<
++					EigenXform,
++					crfXMapValue,
++					::scheme::objective::hash::XformHash_bt24_BCC6
++				> crfXMap;
++			BOOST_STATIC_ASSERT( sizeof( crfXMap::Map::value_type ) == 96 );
++
++			return make_shared< RifFactoryImpl<crfXMap> >( config );
++		}
++		else if( config.rif_type == "Rot10Score6Sat16" )
++		{
++			typedef ::scheme::objective::storage::RotamerScoreSat<uint16_t, 10, -4> crfRotScore;
++			typedef ::scheme::objective::storage::RotamerScores< 14, crfRotScore > crfXMapValue;
++			BOOST_STATIC_ASSERT( sizeof( crfXMapValue ) == 56 );
+ 		typedef ::scheme::objective::hash::XformMap<
+ 				EigenXform,
+ 				crfXMapValue,
+diff --git a/data/example_flags/rifgen.flag b/data/example_flags/rifgen.flag
+index 3403f65..f676d90 100644
+--- a/data/example_flags/rifgen.flag
++++ b/data/example_flags/rifgen.flag
+@@ -13,6 +13,7 @@
+ # What kind of RIF do you want to generate:
+ #                                    Normal: RotScore64
+ #            Normal with hbond satisfaction: RotScoreSat (RotScoreSat_2x16 if you have >255 of polar atoms)
++#  Larger rotamer libraries (e.g., >1024 cluster/irot ids): Rot12ScoreSat96 (4096 rotamer ids; larger entries)
+ # Hotspots:
+ #    I may want to use require_satisfaction: RotScoreSat_1x16
+ #  I don't want to use require_satisfaction: RotScore64
+@@ -130,4 +131,3 @@
+ -rifgen:lever_bounds      16.0   8.0   4.0   2.0   1.0
+ -rifgen:hash_ang_resls     38.8  24.4  17.2  13.6  11.8 # yes worky worky
+ -rifgen:lever_radii        23.6 18.785501 13.324600  8.425850  4.855575
+-
+-- 
+2.43.7
+

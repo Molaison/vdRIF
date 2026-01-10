@@ -165,6 +165,9 @@ Given Combs cluster counts (e.g., `coo`/`ph` ~4k clusters), we choose the C2 app
 - current implementation in vendored rifdock: `external/rifdock/apps/rosetta/riflib/RifFactory.cc` (`Rot12ScoreSat96`).
 
 This makes “cluster_number as irot id” feasible (up to 4096) and shifts the bottleneck to memory/performance rather than bitwidth.
+
+Implementation note:
+- In this run-log repo, `external/rifdock` is kept as an upstream submodule pointer; the C2 code change is tracked as a patch file: `external/patches/rifdock/0001-add-Rot12ScoreSat96.patch`.
 - Keep parquet for **offline analytics**.
 - Build a compact **vdXform** library for rifgen/rifdock consumption.
 
