@@ -30,6 +30,7 @@ Selected `rif_type` variants (from `RifFactory.cc`):
 - `RotScore64`: `RotamerScores<28, RotamerScore<uint16_t,9,...>>`
 - `RotScoreSat`: `RotamerScores<14, RotamerScoreSat<uint16_t,9,...>>`
 - `Rot10Score6Sat16`: `RotamerScores<14, RotamerScoreSat<uint16_t,10,...>>`
+- `Rot12ScoreSat96`: `RotamerScores<14, RotamerScoreSat<uint32_t,12,...>>` (4096 rotamer ids; larger bins)
 - `RotScoreSat_1x16`: `RotamerScores<14, RotamerScoreSat<uint16_t,9,..., SatDatum=uint16_t, NSat=1>>`
 - `RotScoreSat_2x16`: `RotamerScores<19, RotamerScoreSat<uint16_t,9,..., SatDatum=uint16_t, NSat=2>>`
 
@@ -63,4 +64,3 @@ Therefore, the integration hinges on a bounded **irot library**:
 - store per irot: residue atoms in stub-local coords + vdM prior score(s) + “which ligand polar atom(s) can be satisfied” as sat indices
 
 See `docs/irot_compression_plan.md` and `docs/vdxform_to_rif_spec.md`.
-

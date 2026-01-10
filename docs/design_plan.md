@@ -157,6 +157,14 @@ So: any MVP must be **streaming**, aggressively filtered, and resumable.
 Reading parquet from C++ in rifdock is a bad fit (dependency weight + IO patterns).
 
 Decision:
+
+### 3.x C2 path: widen rifdock RotamerBits (chosen)
+
+Given Combs cluster counts (e.g., `coo`/`ph` ~4k clusters), we choose the C2 approach:
+- add a new rifdock `rif_type` with `RotamerBits=12` (4096 rotamer ids) and a larger packed entry type.
+- current implementation in vendored rifdock: `external/rifdock/apps/rosetta/riflib/RifFactory.cc` (`Rot12ScoreSat96`).
+
+This makes “cluster_number as irot id” feasible (up to 4096) and shifts the bottleneck to memory/performance rather than bitwidth.
 - Keep parquet for **offline analytics**.
 - Build a compact **vdXform** library for rifgen/rifdock consumption.
 

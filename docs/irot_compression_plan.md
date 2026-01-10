@@ -83,12 +83,25 @@ Pros:
 Cons:
 - requires new runtime logic; not a standard rifdock RIF.
 
-## Recommended next step
+## Chosen direction (C2)
 
-Start with Strategy A for a minimal MVP that can be exported into rifdock formats, while keeping the current Python pipeline as the correctness oracle.
+We are choosing **C2**: patch rifdock to widen the packed `rotamer_id` capacity by introducing a new `rif_type`:
+- `Rot12ScoreSat96` (4096 rotamer ids)
+
+Implementation is in the vendored rifdock submodule:
+- `external/rifdock/apps/rosetta/riflib/RifFactory.cc`
+
+This removes the hard 512/1024 id cap for Combs cluster counts in the ~1k–4k range, at the cost of larger per-voxel storage.
+
+## Still useful: compression as an optimization
+
+Even with C2, compression can remain valuable for performance/memory (smaller irot libraries, faster generation), but it is no longer a correctness blocker.
+
+## Next step
+
+Validate the rifdock patch builds and can load/save a RIF with `rif_type=Rot12ScoreSat96` on `dg`, then proceed to implement `vdXform→RIF` export using this rif_type while keeping the Python pipeline as the correctness oracle.
 
 Next action items:
 - compute per-`(cg,aa)` cluster frequency tables (needed for a principled budget)
 - implement a deterministic “cluster medoid” extraction for representatives
 - define irot id assignment scheme and write it to disk for reproducibility
-
