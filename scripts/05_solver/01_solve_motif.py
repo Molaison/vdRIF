@@ -89,10 +89,42 @@ def _pair_clash(a_xyz: np.ndarray, b_xyz: np.ndarray, tol: float) -> bool:
     return bool((d2 < thr).any())
 
 
+def _atom_order_vdw(atom_order: list[str]) -> np.ndarray:
+    def elem_from_atom_name(nm: str) -> str:
+        # ATOM_ORDER uses standard PDB atom names; for amino acids we only expect C/N/O/S.
+        return "S" if nm.startswith("S") else nm[0]
+
+    vdw_by_elem = {"C": 1.70, "N": 1.55, "O": 1.52, "S": 1.80}
+    elems = [elem_from_atom_name(nm) for nm in atom_order]
+    return np.asarray([vdw_by_elem.get(e, 1.70) for e in elems], dtype=np.float64)
+
+
+def _pair_clash_full_atom(
+    a_xyz: np.ndarray,  # (m,3) with NaNs for missing atoms
+    b_xyz: np.ndarray,  # (m,3) with NaNs for missing atoms
+    vdw: np.ndarray,  # (m,)
+    tol: float,
+) -> bool:
+    a_ok = np.isfinite(a_xyz).all(axis=1)
+    b_ok = np.isfinite(b_xyz).all(axis=1)
+    if not np.any(a_ok) or not np.any(b_ok):
+        return False
+    aa = a_xyz[a_ok]
+    bb = b_xyz[b_ok]
+    av = vdw[a_ok]
+    bv = vdw[b_ok]
+    d = aa[:, None, :] - bb[None, :, :]
+    d2 = np.einsum("ijx,ijx->ij", d, d)
+    thr = (av[:, None] + bv[None, :] - float(tol)) ** 2
+    return bool((d2 < thr).any())
+
+
 def _build_conflicts_grid(
     R: np.ndarray,
     t: np.ndarray,
     ca_only: np.ndarray,
+    center_atom_xyz_stub: np.ndarray | None,
+    atom_order: list[str] | None,
     grid_size: float,
     ca_prefilter: float,
     tol: float,
@@ -103,6 +135,12 @@ def _build_conflicts_grid(
     assert ca_only.shape[0] == R.shape[0] == t.shape[0]
     n = ca_only.shape[0]
     inv = 1.0 / float(grid_size)
+    use_full = center_atom_xyz_stub is not None and atom_order is not None
+    vdw = _atom_order_vdw(atom_order) if use_full else None
+    world_all = None
+    if use_full:
+        loc = center_atom_xyz_stub.astype(np.float64)
+        world_all = np.einsum("nij,nkj->nki", R, loc) + t[:, None, :]
 
     def cell_key(p: np.ndarray) -> tuple[int, int, int]:
         return (int(math.floor(p[0] * inv)), int(math.floor(p[1] * inv)), int(math.floor(p[2] * inv)))
@@ -112,7 +150,10 @@ def _build_conflicts_grid(
         k = cell_key(ca_only[i])
         cells.setdefault(k, []).append(i)
 
-    neighbors = [(dx, dy, dz) for dx in (-1, 0, 1) for dy in (-1, 0, 1) for dz in (-1, 0, 1)]
+    # Need to search enough neighboring cells so that any pair within ca_prefilter is considered.
+    # Range in cells is ceil(ca_prefilter / grid_size) per dimension.
+    r = int(math.ceil(float(ca_prefilter) / float(grid_size)))
+    neighbors = [(dx, dy, dz) for dx in range(-r, r + 1) for dy in range(-r, r + 1) for dz in range(-r, r + 1)]
 
     conflicts: list[tuple[int, int]] = []
     ca2 = float(ca_prefilter) ** 2
@@ -132,10 +173,15 @@ def _build_conflicts_grid(
                     d = ca_only[i] - ca_only[j]
                     if float(d @ d) > ca2:
                         continue
-                    a_atoms = _candidate_stub_atoms(R[i], t[i])
-                    b_atoms = _candidate_stub_atoms(R[j], t[j])
-                    if _pair_clash(a_atoms, b_atoms, tol=tol):
-                        conflicts.append((i, j))
+                    if use_full:
+                        assert world_all is not None and vdw is not None
+                        if _pair_clash_full_atom(world_all[i], world_all[j], vdw=vdw, tol=tol):
+                            conflicts.append((i, j))
+                    else:
+                        a_atoms = _candidate_stub_atoms(R[i], t[i])
+                        b_atoms = _candidate_stub_atoms(R[j], t[j])
+                        if _pair_clash(a_atoms, b_atoms, tol=tol):
+                            conflicts.append((i, j))
 
     return conflicts
 
@@ -235,7 +281,7 @@ def main() -> None:
     ap.add_argument("--time-limit-s", type=float, default=60.0)
     ap.add_argument("--num-workers", type=int, default=1, help="Set to 1 for determinism.")
     ap.add_argument("--grid-size", type=float, default=4.0)
-    ap.add_argument("--ca-prefilter", type=float, default=8.0)
+    ap.add_argument("--ca-prefilter", type=float, default=12.0)
     ap.add_argument("--clash-tol", type=float, default=0.5)
     args = ap.parse_args()
 
@@ -275,14 +321,24 @@ def main() -> None:
     for r, i in enumerate(order):
         rank[i] = r
 
-    # Build conflicts (approx) using CA grid.
+    # Build conflicts (motif internal clashes) using CA grid for pruning.
     R, t = _unpack_xform12(xform12)
-    ca_local = np.array([1.95280, 0.220007, -1.52486], dtype=np.float64)
-    ca_xyz = np.einsum("nij,j->ni", R, ca_local) + t
+    # IMPORTANT: Do not assume a specific stub-frame CA local coordinate unless we are sure our
+    # stub convention matches rifdock exactly. Prefer the CA atom coordinate from the same
+    # `center_atom_xyz_stub_f32` used to write the motif PDB.
+    if center_atom_xyz_stub is not None and atom_order is not None and "CA" in atom_order:
+        ca_i = int(atom_order.index("CA"))
+        ca_loc = center_atom_xyz_stub[:, ca_i, :].astype(np.float64)
+        ca_xyz = np.einsum("nij,nj->ni", R, ca_loc) + t
+    else:
+        ca_local = np.array([1.95280, 0.220007, -1.52486], dtype=np.float64)
+        ca_xyz = np.einsum("nij,j->ni", R, ca_local) + t
     conflicts = _build_conflicts_grid(
         R=R,
         t=t,
         ca_only=ca_xyz,
+        center_atom_xyz_stub=center_atom_xyz_stub,
+        atom_order=atom_order,
         grid_size=params.grid_size,
         ca_prefilter=params.ca_prefilter,
         tol=params.clash_tol,

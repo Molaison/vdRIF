@@ -38,6 +38,7 @@ class RunOut:
     motif_pdb: Path
     motif_validation_json: Path
     motif_clash_validation_json: Path
+    motif_internal_clash_validation_json: Path
 
 
 def main() -> None:
@@ -79,6 +80,7 @@ def main() -> None:
     solver_py = root / "scripts/05_solver/01_solve_motif.py"
     validate_sat_py = root / "scripts/05_solver/03_validate_motif_polar_satisfaction.py"
     validate_clash_py = root / "scripts/05_solver/04_validate_motif_clashes.py"
+    validate_internal_clash_py = root / "scripts/05_solver/05_validate_motif_internal_clashes.py"
 
     def run_once(run_name: str) -> RunOut:
         run_dir = outdir / run_name
@@ -88,6 +90,7 @@ def main() -> None:
         motif_pdb = run_dir / "MTX_motif.pdb"
         motif_val_json = run_dir / "MTX_motif_validation.json"
         motif_clash_json = run_dir / "MTX_motif_clash_validation.json"
+        motif_internal_clash_json = run_dir / "MTX_motif_internal_clash_validation.json"
 
         t0 = time.time()
         _run(
@@ -161,7 +164,7 @@ def main() -> None:
                 "--grid-size",
                 "4.0",
                 "--ca-prefilter",
-                "8.0",
+                "12.0",
                 "--clash-tol",
                 "0.5",
             ]
@@ -200,6 +203,22 @@ def main() -> None:
                 str(motif_clash_json),
             ]
         )
+        _run(
+            [
+                "uv",
+                "run",
+                "-p",
+                "3.11",
+                "python",
+                str(validate_internal_clash_py),
+                "--motif-pdb",
+                str(motif_pdb),
+                "--ligand-resname",
+                "MTX",
+                "-o",
+                str(motif_internal_clash_json),
+            ]
+        )
 
         val = json.loads(motif_val_json.read_text(encoding="utf-8"))
         if not bool(val.get("all_satisfied")):
@@ -209,6 +228,10 @@ def main() -> None:
         if not bool(clash.get("ok")):
             raise RuntimeError(f"Clash validation FAILED for run {run_name}: {motif_clash_json}")
 
+        internal = json.loads(motif_internal_clash_json.read_text(encoding="utf-8"))
+        if not bool(internal.get("ok")):
+            raise RuntimeError(f"Internal clash validation FAILED for run {run_name}: {motif_internal_clash_json}")
+
         return RunOut(
             candidates_npz=cand_prefix.with_suffix(".npz"),
             candidates_json=cand_prefix.with_suffix(".json"),
@@ -216,6 +239,7 @@ def main() -> None:
             motif_pdb=motif_pdb,
             motif_validation_json=motif_val_json,
             motif_clash_validation_json=motif_clash_json,
+            motif_internal_clash_validation_json=motif_internal_clash_json,
         ), {"candidates_s": t1 - t0, "solve_s": t2 - t1, "total_s": t2 - t0}
 
     A, statsA = run_once("A")
