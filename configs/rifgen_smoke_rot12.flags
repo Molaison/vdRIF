@@ -1,0 +1,35 @@
+# Minimal rifgen smoke test for Rot12ScoreSat96 (4096 rotamer ids).
+#
+# Usage (after building rifgen):
+#   rifgen @configs/rifgen_smoke_rot12.flags
+#
+# Notes:
+# - `target_res` file format is whitespace-separated tokens of either `N` or `N-M` ranges.
+# - Keep bounds/resolutions coarse for a fast run.
+
+-rifgen:target inputs/07_rifgen_smoke/1crn_1_10.pdb
+-rifgen:target_res inputs/07_rifgen_smoke/target_res.list
+
+-rifgen:outdir outputs/07_rifgen_smoke
+-rifgen:outfile rot12_smoke.rif.gz
+
+# RIF entry type (patched)
+-rifgen:rif_type Rot12ScoreSat96
+
+# Keep tiny and fast (rifdock uses vector-valued grid knobs)
+-rifgen:lever_radii 10.0
+-rifgen:lever_bounds 6.0
+-rifgen:hash_cart_resls 4.0
+-rifgen:hash_cart_bounds 6.0
+-rifgen:hash_ang_resls 30.0
+
+# Minimal residue sets (still exercises hb satisfaction path)
+-rifgen:donres SER THR TYR HIS HIS_D
+-rifgen:accres SER THR TYR ASP GLU HIS HIS_D
+-rifgen:apores ALA
+
+# Keep only favorable entries
+-rifgen:score_threshold -0.1
+
+# Reduce output noise
+-out:level 100
