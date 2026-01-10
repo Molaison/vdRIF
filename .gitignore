@@ -1,0 +1,16 @@
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+
+# Local outputs/logs (keep repo light)
+outputs/**/*
+processed/**/*
+logs/**/*
+!outputs/.gitkeep
+!processed/.gitkeep
+!logs/.gitkeep
+
+
+# bv (beads viewer) local config and caches
+.bv/

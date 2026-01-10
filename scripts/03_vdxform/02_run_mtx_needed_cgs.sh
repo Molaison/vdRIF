@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+
+DB="${HOME}/practice_arena/050_test_COMBS/Combs2024/database/database/vdMs"
+OUT="${ROOT}/processed/03_vdxform"
+LOG="${ROOT}/logs/03_vdxform/mtx_needed_cgs.log"
+
+# CGs required by MTX_site_frames.json right now:
+# - from cg_atommap: coo, conh2, ccn, ph
+# - from fallback donors: bb_cnh
+CGS=(coo conh2 ccn ph bb_cnh)
+
+mkdir -p "$(dirname "$LOG")"
+
+{
+  echo "[run] db: $DB"
+  echo "[run] out: $OUT"
+  echo "[run] cgs: ${CGS[*]}"
+  uv sync -p 3.11 --extra rdkit
+
+  for cg in "${CGS[@]}"; do
+    echo "[convert] $cg"
+    WORKERS_ARGS=()
+    if [[ -n "${UV_WORKERS:-}" ]]; then
+      WORKERS_ARGS=(--workers "${UV_WORKERS}")
+    fi
+    uv run -p 3.11 python "${ROOT}/scripts/03_vdxform/01_convert_parquet_to_vdxform_parts.py" \
+      --vdm-db "$DB" \
+      --cg "$cg" \
+      --outdir "$OUT" \
+      --frame-defs "${ROOT}/configs/cg_frame_defs.json" \
+      "${WORKERS_ARGS[@]}" \
+      --resume
+
+    uv run -p 3.11 python "${ROOT}/scripts/03_vdxform/02_pack_vdxform_npz.py" \
+      --parts-dir "${OUT}/${cg}/parts" \
+      -o "${OUT}/${cg}/vdxform_${cg}.npz" \
+      --resume
+  done
+} 2>&1 | tee "$LOG"

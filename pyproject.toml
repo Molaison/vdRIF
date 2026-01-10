@@ -1,0 +1,19 @@
+[project]
+name = "rifdock-vdm-motif"
+version = "0.0.0"
+description = "Planning + prototypes for deterministic ligand motifs via Combs vdMs and rifgen/RIF."
+requires-python = ">=3.11"
+dependencies = [
+  "numpy>=1.24,<2",
+  "pandas>=2.0",
+  "pyarrow>=14",
+  "ortools>=9.8",
+]
+
+[project.optional-dependencies]
+# Optional: used for ligand SMARTS/chemistry tooling inside this repo.
+# Note: the system already has RDKit (python3.6), and local scripts may also use that.
+rdkit = ["rdkit-pypi>=2022.9.5"]
+
+[tool.uv]
+package = false

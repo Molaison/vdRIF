@@ -1,0 +1,6 @@
+[submodule "external/Combs2024"]
+	path = external/Combs2024
+	url = https://github.com/npolizzi/Combs2024
+[submodule "external/rifdock"]
+	path = external/rifdock
+	url = https://github.com/rifdock/rifdock

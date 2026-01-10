@@ -1,0 +1,9 @@
+{
+  "bb_cnh": [["CA", "N", "H"]],
+  "bb_cco": [["CA", "C", "O"]],
+  "ccn": [["CD", "CE", "NZ"]],
+  "conh2": [["CB", "CG", "OD1"], ["CG", "CD", "OE1"]],
+  "coo": [["CB", "CG", "OD1"], ["CG", "CD", "OE1"]],
+  "ph": [["CG", "CD1", "CD2"]],
+  "phenol": [["CG", "CD1", "CD2"]]
+}
