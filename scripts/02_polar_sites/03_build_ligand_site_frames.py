@@ -255,6 +255,7 @@ def main() -> None:
             idxs = _pick_frame_indices(corr_names)
         i0, i1, i2 = idxs
         a0n, a1n, a2n = lgd_sel[i0], lgd_sel[i1], lgd_sel[i2]
+        c2n = corr_names[i2]
         for nm in (a0n, a1n, a2n):
             if nm not in name_to_idx:
                 raise KeyError(f"Ligand atom name not found in PDB: {nm}")
@@ -276,6 +277,46 @@ def main() -> None:
                 covers_polar_atoms=tuple(covers),
             )
         )
+
+        # Symmetry handling (minimal MVP):
+        # Some cg types have symmetric atoms (e.g., coo: OD1/OD2 and OE1/OE2).
+        # In proteins these labels are well-defined, but in ligands O1/O2 style names are arbitrary.
+        # To avoid mirroring artifacts and missed/misplaced interactions, emit a swapped frame too.
+        if cg == "coo":
+            alt_c2 = None
+            if c2n == "OD1" and "OD2" in corr_names:
+                alt_c2 = "OD2"
+            elif c2n == "OD2" and "OD1" in corr_names:
+                alt_c2 = "OD1"
+            elif c2n == "OE1" and "OE2" in corr_names:
+                alt_c2 = "OE2"
+            elif c2n == "OE2" and "OE1" in corr_names:
+                alt_c2 = "OE1"
+
+            if alt_c2 is not None:
+                j2 = corr_names.index(alt_c2)
+                alt_a2n = lgd_sel[j2]
+                if alt_a2n != a2n:
+                    if alt_a2n not in name_to_idx:
+                        raise KeyError(f"Ligand atom name not found in PDB (symmetry swap): {alt_a2n}")
+                    R2, t2 = _frame_from_points(
+                        _xyz(mol, name_to_idx[a0n]),
+                        _xyz(mol, name_to_idx[a1n]),
+                        _xyz(mol, name_to_idx[alt_a2n]),
+                    )
+                    sites.append(
+                        SiteFrame(
+                            site_id=f"cgmap:{key}:swap_{c2n}_to_{alt_c2}",
+                            cg=cg,
+                            lgd_sel=tuple(lgd_sel),
+                            correspond_resname=str(entry["correspond_resname"]),
+                            correspond_names=tuple(corr_names),
+                            frame_atom_names=(a0n, a1n, alt_a2n),
+                            R=R2,
+                            t=t2,
+                            covers_polar_atoms=tuple(covers),
+                        )
+                    )
 
     # 2) Optional fallback for uncovered donor atoms: map to bb_cnh (CA,N,H)
     if args.add_bb_cnh_for_uncovered_donors:

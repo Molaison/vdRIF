@@ -165,7 +165,8 @@ def _dump_motif_pdb(
     atom_order: list[str] | None,
 ) -> None:
     """
-    MVP PDB: ligand coordinates + selected residues as backbone-only pseudo-residues (N/CA/C/CB).
+    PDB: ligand coordinates + selected vdM interaction residues (chain X resnum==10),
+    reconstructed from `center_atom_xyz_stub_f32` in the rifdock BackboneActor stub frame.
     """
     out_pdb.parent.mkdir(parents=True, exist_ok=True)
 
@@ -188,52 +189,36 @@ def _dump_motif_pdb(
 
     lines = list(ligand_lines)
     chain = "M"
+    if center_atom_xyz_stub is None or atom_order is None:
+        raise ValueError(
+            "Missing full-atom residue coordinates (center_atom_xyz_stub_f32) or atom_order; "
+            "regenerate `processed/03_vdxform/<cg>/atom_order.json` and candidates NPZ."
+        )
     for i_out, i in enumerate(selected, start=1):
         resn = str(aa3[i])
         Ri = R[i]
         ti = t[i]
-        if center_atom_xyz_stub is not None and atom_order is not None:
-            # Full-atom center residue coordinates (heavy atoms only), skipping NaNs.
-            for an, p in zip(atom_order, center_atom_xyz_stub[i]):
-                if not np.isfinite(p).all():
-                    continue
-                xyz = (Ri @ p.astype(np.float64)) + ti
-                elem = an[0]
-                if elem == "C":
-                    ae = "C"
-                elif elem == "N":
-                    ae = "N"
-                elif elem == "O":
-                    ae = "O"
-                elif elem == "S":
-                    ae = "S"
-                else:
-                    ae = "C"
-                lines.append(
-                    f"ATOM  {atom_serial:5d} {an:>4s} {resn:>3s} {chain}{i_out:4d}    "
-                    f"{xyz[0]:8.3f}{xyz[1]:8.3f}{xyz[2]:8.3f}  1.00  0.00          {ae:>2s}"
-                )
-                atom_serial += 1
-        else:
-            # Fallback: backbone-only stub (N/CA/C/CB).
-            atom_local = np.array(
-                [
-                    [2.80144, -0.992889, -1.52486],  # N
-                    [1.95280, 0.220007, -1.52486],  # CA
-                    [2.87767, 1.43290, -1.52486],  # C
-                    [1.0264273, 0.25245885, -0.308907],  # CB
-                ],
-                dtype=np.float64,
+        # Full-atom center residue coordinates (heavy atoms only), skipping NaNs.
+        for an, p in zip(atom_order, center_atom_xyz_stub[i]):
+            if not np.isfinite(p).all():
+                continue
+            xyz = (Ri @ p.astype(np.float64)) + ti
+            elem = an[0]
+            if elem == "C":
+                ae = "C"
+            elif elem == "N":
+                ae = "N"
+            elif elem == "O":
+                ae = "O"
+            elif elem == "S":
+                ae = "S"
+            else:
+                ae = "C"
+            lines.append(
+                f"ATOM  {atom_serial:5d} {an:>4s} {resn:>3s} {chain}{i_out:4d}    "
+                f"{xyz[0]:8.3f}{xyz[1]:8.3f}{xyz[2]:8.3f}  1.00  0.00          {ae:>2s}"
             )
-            atom_names = ["N", "CA", "C", "CB"]
-            atom_elems = ["N", "C", "C", "C"]
-            for an, ae, p in zip(atom_names, atom_elems, atom_local):
-                xyz = (Ri @ p) + ti
-                lines.append(
-                    f"ATOM  {atom_serial:5d} {an:>4s} {resn:>3s} {chain}{i_out:4d}    "
-                    f"{xyz[0]:8.3f}{xyz[1]:8.3f}{xyz[2]:8.3f}  1.00  0.00          {ae:>2s}"
-                )
-                atom_serial += 1
+            atom_serial += 1
     lines.append("END")
     out_pdb.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
