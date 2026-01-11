@@ -246,15 +246,30 @@ def main() -> None:
     ap.add_argument("--top-per-site", type=int, default=2000)
     ap.add_argument("--clash-tol", type=float, default=0.5)
     ap.add_argument(
-        "--allow-backbone-hbonds",
-        action="store_true",
-        help="Allow backbone N/O atoms to satisfy ligand polar atoms. Default is sidechain-only satisfaction.",
-    )
-    ap.add_argument(
         "--exclude-aa3",
         type=str,
         default="PRO,CYS",
         help="Comma-separated 3-letter amino acids to exclude (default: PRO,CYS).",
+    )
+    ap.add_argument(
+        "--sidechain-only-satisfaction",
+        action="store_true",
+        help="If set, exclude backbone N/O atoms from donor/acceptor satisfaction tests (sidechain-only).",
+    )
+    ap.add_argument(
+        "--require-sidechain-facing",
+        action="store_true",
+        default=True,
+        help=(
+            "Require the residue sidechain direction to point toward the satisfied ligand polar site(s). "
+            "This filters out candidates where only the backbone interacts and the sidechain points away."
+        ),
+    )
+    ap.add_argument(
+        "--min-sidechain-facing-dot",
+        type=float,
+        default=0.2,
+        help="Minimum dot( sidechain_dir , ligand_dir ) to accept a candidate (default 0.2).",
     )
     ap.add_argument("--require-full-coverage", action="store_true")
     args = ap.parse_args()
@@ -364,15 +379,18 @@ def main() -> None:
         def atom_indices(names: set[str]) -> list[int]:
             return [i for i, nm in enumerate(atom_order) if nm in names]
 
-        if args.allow_backbone_hbonds:
-            donor_idx = atom_indices(donor_atoms)
-            acceptor_idx = atom_indices(acceptor_atoms)
-        else:
-            # Sidechain-only: exclude backbone N/O so nonpolar residues can't satisfy by backbone alone.
+        if args.sidechain_only_satisfaction:
             donor_idx = atom_indices({nm for nm in donor_atoms if nm not in backbone_atoms})
             acceptor_idx = atom_indices({nm for nm in acceptor_atoms if nm not in backbone_atoms})
+        else:
+            donor_idx = atom_indices(donor_atoms)
+            acceptor_idx = atom_indices(acceptor_atoms)
         cation_idx = atom_indices(cation_atoms)
         anion_idx = atom_indices(anion_atoms)
+
+        # Sidechain direction indices (for orientation filtering)
+        ca_i = int(atom_order.index("CA")) if "CA" in atom_order else -1
+        sidechain_idx = [i for i, nm in enumerate(atom_order) if nm not in backbone_atoms]
 
         prior = _prior_score(
             vdx.get("cluster_rank_ABPLE_A_f32", np.full((vdm_ids.shape[0],), np.nan, dtype=np.float32)).astype(np.float64),
@@ -481,6 +499,7 @@ def main() -> None:
                 if str(aa_arr[idx]).upper() in exclude_aa3:
                     continue
                 cov = 0
+                satisfied_xyz: list[np.ndarray] = []
                 for _an, bit, roles, pxyz in site_polar:
                     need = _needed_roles(roles)
                     sat = True
@@ -503,9 +522,37 @@ def main() -> None:
                                 break
                     if sat:
                         cov |= 1 << bit
+                        satisfied_xyz.append(pxyz)
 
                 if cov == 0:
                     continue
+
+                if args.require_sidechain_facing:
+                    if ca_i < 0 or not sidechain_idx:
+                        continue
+                    ca_xyz = world_all[ii, ca_i, :]
+                    if not np.isfinite(ca_xyz).all():
+                        continue
+                    sc_xyz = world_all[ii, sidechain_idx, :]
+                    sc_ok = np.isfinite(sc_xyz).all(axis=1)
+                    if not np.any(sc_ok):
+                        continue
+                    sc_com = sc_xyz[sc_ok].mean(axis=0)
+                    v_sc = sc_com - ca_xyz
+                    n_sc = float(np.linalg.norm(v_sc))
+                    if n_sc < 1e-8:
+                        continue
+                    if not satisfied_xyz:
+                        continue
+                    tgt = np.mean(np.stack(satisfied_xyz, axis=0), axis=0)
+                    v_t = tgt - ca_xyz
+                    n_t = float(np.linalg.norm(v_t))
+                    if n_t < 1e-8:
+                        continue
+                    dot = float(np.dot(v_sc / n_sc, v_t / n_t))
+                    if dot < float(args.min_sidechain_facing_dot):
+                        continue
+
                 # Score: prior + tiny bonus for satisfying more atoms (deterministic).
                 sc = float(prior[idx]) + 1e-3 * int(cov).bit_count()
                 maybe_add(idx, sc, cov)

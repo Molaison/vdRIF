@@ -119,6 +119,9 @@ def main() -> None:
                 "0.5",
                 "--exclude-aa3",
                 "PRO,CYS",
+                "--require-sidechain-facing",
+                "--min-sidechain-facing-dot",
+                "0.2",
                 "--require-full-coverage",
             ]
         )
