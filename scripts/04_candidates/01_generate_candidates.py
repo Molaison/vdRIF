@@ -271,6 +271,12 @@ def main() -> None:
         default=0.2,
         help="Minimum dot( sidechain_dir , ligand_dir ) to accept a candidate (default 0.2).",
     )
+    ap.add_argument(
+        "--min-sidechain-centroid-dot",
+        type=float,
+        default=0.0,
+        help="Minimum dot( sidechain_dir , direction-to-ligand-centroid ) to accept a candidate (default 0.0).",
+    )
     ap.add_argument("--require-full-coverage", action="store_true")
     args = ap.parse_args()
 
@@ -288,6 +294,7 @@ def main() -> None:
 
     ligand = _load_pdb_mol(args.ligand_pdb)
     lig_names, lig_xyz, lig_vdw = _ligand_heavy_atoms(ligand)
+    lig_centroid = lig_xyz.mean(axis=0)
 
     # Residue atoms used for clash filtering, in rifdock BackboneActor local coords (Angstrom)
     # See external/rifdock/schemelib/scheme/actor/BackboneActor.hh get_n_ca_c/get_cb.
@@ -564,6 +571,14 @@ def main() -> None:
                         continue
                     dot = float(np.dot(v_sc / n_sc, v_t / n_t))
                     if dot < float(args.min_sidechain_facing_dot):
+                        continue
+                    # Additional pocket-likeness: sidechain should generally point toward the ligand centroid.
+                    v_c = lig_centroid - ca_xyz
+                    n_c = float(np.linalg.norm(v_c))
+                    if n_c < 1e-8:
+                        continue
+                    dot_c = float(np.dot(v_sc / n_sc, v_c / n_c))
+                    if dot_c < float(args.min_sidechain_centroid_dot):
                         continue
 
                 # Score: prior + tiny bonus for satisfying more atoms (deterministic).

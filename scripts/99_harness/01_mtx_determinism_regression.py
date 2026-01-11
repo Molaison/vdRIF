@@ -122,6 +122,8 @@ def main() -> None:
                 "--require-sidechain-facing",
                 "--min-sidechain-facing-dot",
                 "0.2",
+                "--min-sidechain-centroid-dot",
+                "0.0",
                 "--require-full-coverage",
             ]
         )
