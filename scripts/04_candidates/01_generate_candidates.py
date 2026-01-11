@@ -455,8 +455,8 @@ def main() -> None:
             # Full-atom ligand clash filter (prevents severe sidechain/ligand overlaps).
             # Transform all center residue atoms into world; NaNs indicate missing atoms and are ignored.
             loc_all = center_xyz_stub[start:end][ok_local].astype(np.float64)  # (n_ok,m,3)
-            world_all = np.einsum("nij,nkj->nki", Rw[ok_local], loc_all) + tw[ok_local][:, None, :]
             # dist^2: (n_ok,m,lig)
+            world_all = np.einsum("nij,nkj->nki", Rw[ok_local], loc_all) + tw[ok_local][:, None, :]
             d = world_all[:, :, None, :] - lig_xyz[None, None, :, :]
             d2 = np.einsum("nkmj,nkmj->nkm", d, d)
             thr = atom_order_vdw[:, None] + lig_vdw[None, :] - float(args.clash_tol)
@@ -466,6 +466,11 @@ def main() -> None:
             if not np.any(ok_full):
                 continue
             ok_local = ok_local[ok_full]
+            # IMPORTANT: `world_all` must stay aligned with the current `ok_local`.
+            # Recompute after filtering, otherwise downstream orientation filters can be applied
+            # to the wrong candidate.
+            loc_all = center_xyz_stub[start:end][ok_local].astype(np.float64)
+            world_all = np.einsum("nij,nkj->nki", Rw[ok_local], loc_all) + tw[ok_local][:, None, :]
 
             # Transform relevant atom sets for satisfaction tests; NaNs propagate and are ignored via nanmin.
             def world_coords(idxs: list[int]) -> np.ndarray:
@@ -533,12 +538,20 @@ def main() -> None:
                     ca_xyz = world_all[ii, ca_i, :]
                     if not np.isfinite(ca_xyz).all():
                         continue
-                    sc_xyz = world_all[ii, sidechain_idx, :]
-                    sc_ok = np.isfinite(sc_xyz).all(axis=1)
-                    if not np.any(sc_ok):
-                        continue
-                    sc_com = sc_xyz[sc_ok].mean(axis=0)
-                    v_sc = sc_com - ca_xyz
+                    # Prefer the CA->CB direction (first sidechain bond) when CB exists,
+                    # since it matches the user's expectation of \"sidechain points into pocket\".
+                    v_sc = None
+                    if "CB" in atom_order:
+                        cb_xyz = world_all[ii, int(atom_order.index("CB")), :]
+                        if np.isfinite(cb_xyz).all():
+                            v_sc = cb_xyz - ca_xyz
+                    if v_sc is None:
+                        sc_xyz = world_all[ii, sidechain_idx, :]
+                        sc_ok = np.isfinite(sc_xyz).all(axis=1)
+                        if not np.any(sc_ok):
+                            continue
+                        sc_com = sc_xyz[sc_ok].mean(axis=0)
+                        v_sc = sc_com - ca_xyz
                     n_sc = float(np.linalg.norm(v_sc))
                     if n_sc < 1e-8:
                         continue

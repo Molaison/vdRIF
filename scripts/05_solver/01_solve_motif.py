@@ -363,17 +363,18 @@ def main() -> None:
         model.Add(x[i] + x[j] <= 1)
 
     # Objective: lexicographic (encoded as 1 linear objective):
-    # 1) maximize total score
-    # 2) minimize number of residues (prefer smaller motifs when score ties)
+    # 1) minimize number of residues (prefer smaller motifs; satisfies user's \"8-15\" as a bound)
+    # 2) maximize total score (within the minimal count)
     # 3) deterministic tie-break by candidate rank
     #
-    # Encode as: sum( score_int*A + tie_int - count_penalty ) * x_i
-    # Choose A large enough so a +1 change in total score dominates all tie/count effects.
-    count_penalty = n + 1
-    A = (2 * int(params.max_res) * (n + 1)) + 1
-    score_int = np.round(score_f * 1000.0).astype(np.int64)
+    # Encode as: maximize sum( gain_i - B ) * x_i where B is large enough that any +1 residue loses
+    # against any possible gain difference, thus enforcing \"minimize count\" first.
+    score_int = np.round(np.clip(score_f, -1e6, 1e6) * 1000.0).astype(np.int64)
     tie_int = (n - 1 - rank).astype(np.int64)  # earlier rank => larger tie
-    coeff = score_int * A + tie_int - count_penalty
+    gain = score_int + tie_int
+    span = int(params.max_res) * int(gain.max() - gain.min())
+    B = span + 1
+    coeff = gain - B
     model.Maximize(sum(int(coeff[i]) * x[i] for i in range(n)))
 
     solver = cp_model.CpSolver()
