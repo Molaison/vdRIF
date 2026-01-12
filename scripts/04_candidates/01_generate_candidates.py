@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import heapq
 import math
 from dataclasses import dataclass
 from pathlib import Path
@@ -173,6 +174,49 @@ def _clash_mask(
     d2 = np.einsum("nkmj,nkmj->nkm", d, d)
     # threshold: (k,m)
     thr = residue_atoms_vdw[:, None] + ligand_vdw[None, :] - float(tolerance)
+    thr2 = thr * thr
+    clash = (d2 < thr2[None, :, :]).any(axis=(1, 2))
+    return ~clash
+
+
+def _clash_mask_full_fast(
+    residue_atoms_xyz: np.ndarray,  # (n,k,3)
+    residue_atoms_vdw: np.ndarray,  # (k,)
+    ligand_xyz: np.ndarray,  # (m,3)
+    ligand_vdw: np.ndarray,  # (m,)
+    tolerance: float,
+) -> np.ndarray:
+    """
+    Returns boolean mask (n,) where True means "no clash".
+
+    Full-atom clash filter is a major hotspot; this implementation avoids allocating
+    a 4D (n,k,m,3) tensor by using the identity:
+      ||a-b||^2 = ||a||^2 + ||b||^2 - 2 a·b
+    which can be computed via a single matmul on (n*k,3)×(3,m).
+
+    NaNs (missing atoms) propagate through and do not count as clashes.
+    """
+    residue_atoms_xyz = np.asarray(residue_atoms_xyz, dtype=np.float32)
+    ligand_xyz = np.asarray(ligand_xyz, dtype=np.float32)
+    residue_atoms_vdw = np.asarray(residue_atoms_vdw, dtype=np.float32)
+    ligand_vdw = np.asarray(ligand_vdw, dtype=np.float32)
+
+    n = int(residue_atoms_xyz.shape[0])
+    if n == 0:
+        return np.zeros((0,), dtype=bool)
+    k = int(residue_atoms_xyz.shape[1])
+    m = int(ligand_xyz.shape[0])
+
+    res = residue_atoms_xyz.reshape(n * k, 3)
+    lig = ligand_xyz
+
+    res2 = np.sum(res * res, axis=1, dtype=np.float32)[:, None]  # (n*k,1)
+    lig2 = np.sum(lig * lig, axis=1, dtype=np.float32)[None, :]  # (1,m)
+    dot = res @ lig.T  # (n*k,m); NaNs propagate
+    d2 = (res2 + lig2) - (2.0 * dot)
+    d2 = d2.reshape(n, k, m)
+
+    thr = residue_atoms_vdw[:, None] + ligand_vdw[None, :] - float(tolerance)  # (k,m)
     thr2 = thr * thr
     clash = (d2 < thr2[None, :, :]).any(axis=(1, 2))
     return ~clash
@@ -407,33 +451,21 @@ def main() -> None:
 
         # Keep top candidates for this site (min-heap style arrays)
         top_k = int(args.top_per_site)
-        # Store as parallel arrays for speed
-        heap_score: list[float] = []
-        heap_vdm: list[int] = []
-        heap_i: list[int] = []
-        heap_cover: list[int] = []
+        # Deterministic top-k:
+        # - primary: higher score is better
+        # - tie: smaller vdm_id is better
+        # We implement this with a min-heap whose root is the *worst* element:
+        # key = (score, -vdm_id)  => for equal score, larger vdm_id yields smaller key (worse).
+        heap: list[tuple[float, int, int, int]] = []  # (score, -vdm_id, idx, cov)
 
         def maybe_add(idx: int, sc: float, cov: int) -> None:
-            nonlocal heap_score, heap_vdm, heap_i, heap_cover
             v = int(vdm_ids[idx])
-            if len(heap_score) < top_k:
-                heap_score.append(sc)
-                heap_vdm.append(v)
-                heap_i.append(idx)
-                heap_cover.append(int(cov))
+            item = (float(sc), -v, int(idx), int(cov))
+            if len(heap) < top_k:
+                heapq.heappush(heap, item)
                 return
-            # Find current worst (deterministic tie-break: larger vdm_id is worse)
-            worst_j = 0
-            for j in range(1, len(heap_score)):
-                if heap_score[j] < heap_score[worst_j]:
-                    worst_j = j
-                elif heap_score[j] == heap_score[worst_j] and heap_vdm[j] > heap_vdm[worst_j]:
-                    worst_j = j
-            if sc > heap_score[worst_j] or (sc == heap_score[worst_j] and v < heap_vdm[worst_j]):
-                heap_score[worst_j] = sc
-                heap_vdm[worst_j] = v
-                heap_i[worst_j] = idx
-                heap_cover[worst_j] = int(cov)
+            if item[:2] > heap[0][:2]:
+                heapq.heapreplace(heap, item)
 
         n = vdm_ids.shape[0]
         chunk = int(args.chunk_size)
@@ -459,135 +491,180 @@ def main() -> None:
             if ok_local.size == 0:
                 continue
 
-            # Full-atom ligand clash filter (prevents severe sidechain/ligand overlaps).
-            # Transform all center residue atoms into world; NaNs indicate missing atoms and are ignored.
-            loc_all = center_xyz_stub[start:end][ok_local].astype(np.float64)  # (n_ok,m,3)
-            # dist^2: (n_ok,m,lig)
-            world_all = np.einsum("nij,nkj->nki", Rw[ok_local], loc_all) + tw[ok_local][:, None, :]
-            d = world_all[:, :, None, :] - lig_xyz[None, None, :, :]
-            d2 = np.einsum("nkmj,nkmj->nkm", d, d)
-            thr = atom_order_vdw[:, None] + lig_vdw[None, :] - float(args.clash_tol)
-            thr2 = thr * thr
-            clash_full = (d2 < thr2[None, :, :]).any(axis=(1, 2))
-            ok_full = ~clash_full
-            if not np.any(ok_full):
-                continue
-            ok_local = ok_local[ok_full]
-            # IMPORTANT: `world_all` must stay aligned with the current `ok_local`.
-            # Recompute after filtering, otherwise downstream orientation filters can be applied
-            # to the wrong candidate.
-            loc_all = center_xyz_stub[start:end][ok_local].astype(np.float64)
-            world_all = np.einsum("nij,nkj->nki", Rw[ok_local], loc_all) + tw[ok_local][:, None, :]
+            # We intentionally defer full-atom ligand clash filtering until after
+            # *geometric satisfaction* pruning. Only a small fraction of vdMs will
+            # satisfy a given polar site, so doing full-atom ligand clash checks
+            # on all `ok_local` candidates is a huge performance cost.
+            #
+            # Step 1: transform only the relevant polar atom sets to evaluate satisfaction.
+            Rw_ok = Rw[ok_local]
+            tw_ok = tw[ok_local]
 
-            # Transform relevant atom sets for satisfaction tests; NaNs propagate and are ignored via nanmin.
-            def world_coords(idxs: list[int]) -> np.ndarray:
+            def world_coords_subset(idxs: list[int]) -> np.ndarray:
                 if not idxs:
                     return np.zeros((ok_local.size, 0, 3), dtype=np.float64)
                 loc = center_xyz_stub[start:end][ok_local][:, idxs, :].astype(np.float64)
-                return np.einsum("nij,nkj->nki", Rw[ok_local], loc) + tw[ok_local][:, None, :]
+                return np.einsum("nij,nkj->nki", Rw_ok, loc) + tw_ok[:, None, :]
 
-            donors_w = world_coords(donor_idx)
-            acceptors_w = world_coords(acceptor_idx)
-            cations_w = world_coords(cation_idx)
-            anions_w = world_coords(anion_idx)
+            donors_w = world_coords_subset(donor_idx)
+            acceptors_w = world_coords_subset(acceptor_idx)
+            cations_w = world_coords_subset(cation_idx)
+            anions_w = world_coords_subset(anion_idx)
 
             hbd2 = 3.5 * 3.5
             ion2 = 4.0 * 4.0
 
-            def _min_d2(points_xyz: np.ndarray, target_xyz: np.ndarray) -> float:
-                # points_xyz: (k,3); may contain NaNs for missing atoms.
-                if points_xyz.shape[0] == 0:
-                    return float("inf")
-                d = points_xyz - target_xyz[None, :]
-                d2 = np.einsum("ij,ij->i", d, d)  # NaNs propagate
-                ok = np.isfinite(d2)
-                if not np.any(ok):
-                    return float("inf")
-                return float(d2[ok].min())
+            def _min_d2_all(points_xyz: np.ndarray, target_xyz: np.ndarray) -> np.ndarray:
+                # points_xyz: (n,k,3); may contain NaNs for missing atoms.
+                if points_xyz.shape[1] == 0:
+                    return np.full((points_xyz.shape[0],), float("inf"), dtype=np.float64)
+                d = points_xyz - target_xyz[None, None, :]
+                d2 = np.einsum("nkj,nkj->nk", d, d)  # NaNs propagate
+                d2 = np.where(np.isfinite(d2), d2, float("inf"))
+                return d2.min(axis=1)
 
-            # For each passing candidate, compute which polar atoms it truly satisfies.
-            for ii, idx_local in enumerate(ok_local.tolist()):
-                idx = start + idx_local
-                if str(aa_arr[idx]).upper() in exclude_aa3:
+            # Vectorized coverage mask for ok_local candidates.
+            cov_arr = np.zeros((ok_local.size,), dtype=np.uint16)
+            for _an, bit, roles, pxyz in site_polar:
+                need = _needed_roles(roles)
+                sat_mask = np.ones((ok_local.size,), dtype=bool)
+                for need_role in need:
+                    if need_role == "donor":
+                        sat_mask &= _min_d2_all(donors_w, pxyz) <= hbd2
+                    elif need_role == "acceptor":
+                        sat_mask &= _min_d2_all(acceptors_w, pxyz) <= hbd2
+                    elif need_role == "cation":
+                        sat_mask &= _min_d2_all(cations_w, pxyz) <= ion2
+                    elif need_role == "anion":
+                        sat_mask &= _min_d2_all(anions_w, pxyz) <= ion2
+                cov_arr |= (sat_mask.astype(np.uint16) << np.uint16(bit))
+
+            # Early prune: only candidates that satisfy at least one polar atom can proceed.
+            pass_mask = cov_arr != 0
+            if not np.any(pass_mask):
+                continue
+
+            pass_local = ok_local[pass_mask]
+            pass_cov = cov_arr[pass_mask].astype(np.uint16)
+            pass_idx = (start + pass_local).astype(np.int64)
+            pass_aa = aa_arr[pass_idx]
+
+            # Exclude amino acids early (cheap).
+            ok_aa = np.array([str(x).upper() not in exclude_aa3 for x in pass_aa], dtype=bool)
+            if not np.any(ok_aa):
+                continue
+            pass_local = pass_local[ok_aa]
+            pass_cov = pass_cov[ok_aa]
+            pass_idx = pass_idx[ok_aa]
+
+            # Step 2: for the (much smaller) satisfaction-passing set, compute full-atom world coords,
+            # then apply facing + full-atom ligand clash filter.
+            loc_all = center_xyz_stub[start:end][pass_local].astype(np.float64)  # (n_pass,atoms,3)
+            world_all = np.einsum("nij,nkj->nki", Rw[pass_local], loc_all) + tw[pass_local][:, None, :]
+
+            if args.require_sidechain_facing:
+                if ca_i < 0 or not sidechain_idx:
                     continue
-                cov = 0
-                satisfied_xyz: list[np.ndarray] = []
-                for _an, bit, roles, pxyz in site_polar:
-                    need = _needed_roles(roles)
-                    sat = True
-                    for need_role in need:
-                        if need_role == "donor":
-                            if _min_d2(donors_w[ii], pxyz) > hbd2:
-                                sat = False
-                                break
-                        elif need_role == "acceptor":
-                            if _min_d2(acceptors_w[ii], pxyz) > hbd2:
-                                sat = False
-                                break
-                        elif need_role == "cation":
-                            if _min_d2(cations_w[ii], pxyz) > ion2:
-                                sat = False
-                                break
-                        elif need_role == "anion":
-                            if _min_d2(anions_w[ii], pxyz) > ion2:
-                                sat = False
-                                break
-                    if sat:
-                        cov |= 1 << bit
-                        satisfied_xyz.append(pxyz)
 
-                if cov == 0:
+                ca_xyz = world_all[:, ca_i, :]
+                ca_ok = np.isfinite(ca_xyz).all(axis=1)
+                if not np.any(ca_ok):
+                    continue
+                world_all = world_all[ca_ok]
+                pass_local = pass_local[ca_ok]
+                pass_cov = pass_cov[ca_ok]
+                pass_idx = pass_idx[ca_ok]
+
+                # Prefer CA->CB; fall back to sidechain COM if CB is missing/NaN.
+                v_sc = None
+                cb_i = int(atom_order.index("CB")) if "CB" in atom_order else -1
+                if cb_i >= 0:
+                    cb_xyz = world_all[:, cb_i, :]
+                    cb_ok = np.isfinite(cb_xyz).all(axis=1)
+                    v_sc = np.where(cb_ok[:, None], cb_xyz - ca_xyz[ca_ok], np.nan)
+                if v_sc is None:
+                    v_sc = np.full_like(ca_xyz[ca_ok], np.nan)
+
+                # For candidates without a valid CB vector, compute sidechain COM vector.
+                missing = ~np.isfinite(v_sc).all(axis=1)
+                if np.any(missing):
+                    sc_xyz = world_all[missing][:, sidechain_idx, :]
+                    sc_ok = np.isfinite(sc_xyz).all(axis=2)
+                    # If no sidechain atoms are present (e.g., GLY), reject.
+                    has_sc = sc_ok.any(axis=1)
+                    v_tmp = np.full((int(missing.sum()), 3), np.nan, dtype=np.float64)
+                    if np.any(has_sc):
+                        sc_com = np.array(
+                            [
+                                sc_xyz[i][sc_ok[i]].mean(axis=0) if has_sc[i] else np.array([np.nan, np.nan, np.nan])
+                                for i in range(sc_xyz.shape[0])
+                            ],
+                            dtype=np.float64,
+                        )
+                        v_tmp[has_sc] = sc_com[has_sc] - ca_xyz[ca_ok][missing][has_sc]
+                    v_sc[missing] = v_tmp
+
+                n_sc = np.linalg.norm(v_sc, axis=1)
+                ok_sc = np.isfinite(n_sc) & (n_sc > 1e-8)
+                if not np.any(ok_sc):
                     continue
 
-                if args.require_sidechain_facing:
-                    if ca_i < 0 or not sidechain_idx:
-                        continue
-                    ca_xyz = world_all[ii, ca_i, :]
-                    if not np.isfinite(ca_xyz).all():
-                        continue
-                    # Prefer the CA->CB direction (first sidechain bond) when CB exists,
-                    # since it matches the user's expectation of \"sidechain points into pocket\".
-                    v_sc = None
-                    if "CB" in atom_order:
-                        cb_xyz = world_all[ii, int(atom_order.index("CB")), :]
-                        if np.isfinite(cb_xyz).all():
-                            v_sc = cb_xyz - ca_xyz
-                    if v_sc is None:
-                        sc_xyz = world_all[ii, sidechain_idx, :]
-                        sc_ok = np.isfinite(sc_xyz).all(axis=1)
-                        if not np.any(sc_ok):
-                            continue
-                        sc_com = sc_xyz[sc_ok].mean(axis=0)
-                        v_sc = sc_com - ca_xyz
-                    n_sc = float(np.linalg.norm(v_sc))
-                    if n_sc < 1e-8:
-                        continue
-                    if not satisfied_xyz:
-                        continue
-                    tgt = np.mean(np.stack(satisfied_xyz, axis=0), axis=0)
-                    v_t = tgt - ca_xyz
-                    n_t = float(np.linalg.norm(v_t))
-                    if n_t < 1e-8:
-                        continue
-                    dot = float(np.dot(v_sc / n_sc, v_t / n_t))
-                    if dot < float(args.min_sidechain_facing_dot):
-                        continue
-                    # Additional pocket-likeness: sidechain should generally point toward the ligand centroid.
-                    v_c = lig_centroid - ca_xyz
-                    n_c = float(np.linalg.norm(v_c))
-                    if n_c < 1e-8:
-                        continue
-                    dot_c = float(np.dot(v_sc / n_sc, v_c / n_c))
-                    if dot_c < float(args.min_sidechain_centroid_dot):
-                        continue
+                # Use the mean position of the site’s covered ligand polar atoms as the target direction.
+                tgt = np.mean(np.stack([p for _an, _bit, _roles, p in site_polar], axis=0), axis=0)
+                v_t = tgt[None, :] - ca_xyz[ca_ok]
+                n_t = np.linalg.norm(v_t, axis=1)
+                ok_t = np.isfinite(n_t) & (n_t > 1e-8)
 
-                # Score: prior + tiny bonus for satisfying more atoms (deterministic).
+                v_c = lig_centroid[None, :] - ca_xyz[ca_ok]
+                n_c = np.linalg.norm(v_c, axis=1)
+                ok_c = np.isfinite(n_c) & (n_c > 1e-8)
+
+                ok_dir = ok_sc & ok_t & ok_c
+                if not np.any(ok_dir):
+                    continue
+
+                v_sc_u = v_sc[ok_dir] / n_sc[ok_dir, None]
+                v_t_u = v_t[ok_dir] / n_t[ok_dir, None]
+                v_c_u = v_c[ok_dir] / n_c[ok_dir, None]
+
+                dot_t = np.einsum("ij,ij->i", v_sc_u, v_t_u)
+                dot_c = np.einsum("ij,ij->i", v_sc_u, v_c_u)
+
+                ok_face = (dot_t >= float(args.min_sidechain_facing_dot)) & (dot_c >= float(args.min_sidechain_centroid_dot))
+
+                mask_face = np.zeros((ok_dir.shape[0],), dtype=bool)
+                mask_face[np.nonzero(ok_dir)[0]] = ok_face
+
+                if not np.any(mask_face):
+                    continue
+
+                world_all = world_all[mask_face]
+                pass_local = pass_local[mask_face]
+                pass_cov = pass_cov[mask_face]
+                pass_idx = pass_idx[mask_face]
+
+            ok_full = _clash_mask_full_fast(
+                world_all,
+                atom_order_vdw,
+                lig_xyz,
+                lig_vdw,
+                tolerance=float(args.clash_tol),
+            )
+            if not np.any(ok_full):
+                continue
+
+            pass_local = pass_local[ok_full]
+            pass_cov = pass_cov[ok_full]
+            pass_idx = pass_idx[ok_full]
+
+            # Finally, score and keep top-k for this site.
+            for idx, cov in zip(pass_idx.tolist(), pass_cov.tolist(), strict=True):
                 sc = float(prior[idx]) + 1e-3 * int(cov).bit_count()
-                maybe_add(idx, sc, cov)
+                maybe_add(int(idx), sc, int(cov))
 
         # Emit this site's kept candidates
-        kept = sorted(zip(heap_score, heap_vdm, heap_i, heap_cover), key=lambda x: (-x[0], x[1]))
-        for sc, _vdm_u64_int, idx, cov in kept:
+        kept = sorted(heap, key=lambda x: (-x[0], -x[1]))
+        for sc, neg_vdm, idx, cov in kept:
             cid = _stable_u64(f"{site.site_id}|{int(vdm_ids[idx])}")
             cand_id.append(np.uint64(cid))
             site_index.append(np.uint16(site.site_index))

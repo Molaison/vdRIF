@@ -48,6 +48,12 @@ def main() -> None:
     ap.add_argument("--top-per-site", type=int, default=200)
     ap.add_argument("--time-limit-s", type=float, default=30.0)
     ap.add_argument(
+        "--vdxform-dir",
+        type=Path,
+        default=Path("processed/03_vdxform"),
+        help="Directory containing per-cg vdxform_<cg>.npz files.",
+    )
+    ap.add_argument(
         "--allow-backbone-only",
         action="store_true",
         help=(
@@ -65,7 +71,7 @@ def main() -> None:
     polar = root / "outputs/02_polar_sites/MTX_polar_sites.json"
     frames = root / "outputs/02_polar_sites/MTX_site_frames.json"
 
-    vdx = root / "processed/03_vdxform"
+    vdx = (root / args.vdxform_dir).resolve() if not args.vdxform_dir.is_absolute() else args.vdxform_dir.resolve()
     for cg in ["coo", "conh2", "ccn", "ph", "bb_cnh"]:
         _ensure_file(
             vdx / cg / f"vdxform_{cg}.npz",

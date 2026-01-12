@@ -18,6 +18,27 @@ Implication for vdM integration:
 
 ## 2) rifgen “polar” enumeration is already very large-scale
 
+## 3) Full-atom clash checks must be deferred until after satisfaction pruning
+
+Naively applying a full-atom ligand–residue clash check to **every** vdM placement is expensive:
+cost scales as `O(n_candidates × n_res_atoms × n_lig_atoms)`.
+
+For our MTX pipeline, the key speed win is:
+- First filter candidates by **geometric satisfaction** (donor/acceptor/ion distance tests) and **sidechain-facing**.
+- Only then run full-atom ligand clash checks on the much smaller surviving set.
+
+This makes full-size vdXform enumeration feasible even on a 1-core machine, and matches how RIFGen
+conceptually works (enumerate → score/filter → keep top-K per bin).
+
+## 4) CP-SAT motif selection doesn’t scale to 25k+ candidates (without compression)
+
+The current CP-SAT solver builds pairwise full-atom conflict constraints. With `top_per_site=2000` it can
+produce ~25k candidates, and conflict construction becomes too slow (even before CP-SAT search).
+
+Practical stopgap for the Python MVP:
+- keep `top_per_site≈200` (gives ~3k candidates for MTX) so conflict construction is tractable,
+- then move the scalability story to RIF-style binning/top-K caps (future work).
+
 The polar RIF generator (`RifGeneratorSimpleHbonds`) does not just loop over a fixed small rotamer set.
 
 Key facts:

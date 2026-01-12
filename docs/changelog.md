@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026-01-13
+
+- Built **full-scale** vdXform libraries for MTX-required CGs under `processed/03_vdxform_full/`:
+  - `coo` (348,142), `conh2` (303,932), `ccn` (145,248), `ph` (417,170), `bb_cnh` (314,744) entries.
+- Refactored candidate generation to be tractable on 1-core:
+  - Prunes by **geometric satisfaction + sidechain-facing** before running expensive full-atom ligand clash checks.
+  - Uses a deterministic `heapq` top-K per site (stable tie-breaking by `vdm_id`).
+- Verified end-to-end determinism on full libs: `processed/99_harness/mtx_det_full_vdxform_det_top200/report.json`.
+- Verified a real MTX motif output (8 residues) with full coverage and zero severe clashes:
+  - `processed/99_harness/mtx_full_vdxform_single/MTX_motif_top200.pdb`
+  - `processed/99_harness/mtx_full_vdxform_single/MTX_motif_top200_validation.json`
+  - `processed/99_harness/mtx_full_vdxform_single/MTX_motif_top200_clash_validation.json`
+  - `processed/99_harness/mtx_full_vdxform_single/MTX_motif_top200_internal_clash_validation.json`
+
 ## 2026-01-09
 
 - Initialized project planning repo with bd issues for vdM × RIFGen integration.
