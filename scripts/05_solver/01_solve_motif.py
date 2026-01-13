@@ -190,6 +190,16 @@ def _bit_covered(mask: np.ndarray, bit: int) -> np.ndarray:
     return (mask & (1 << bit)) != 0
 
 
+_POPCOUNT_U8 = np.array([bin(i).count("1") for i in range(256)], dtype=np.uint8)
+
+
+def _popcount_u16(x: np.ndarray) -> np.ndarray:
+    x = np.asarray(x, dtype=np.uint16)
+    lo = (x & np.uint16(0x00FF)).astype(np.uint8)
+    hi = (x >> np.uint16(8)).astype(np.uint8)
+    return (_POPCOUNT_U8[lo] + _POPCOUNT_U8[hi]).astype(np.uint8)
+
+
 @dataclass(frozen=True)
 class SolveParams:
     min_res: int
@@ -199,6 +209,115 @@ class SolveParams:
     grid_size: float
     ca_prefilter: float
     clash_tol: float
+
+
+def _solve_greedy(
+    *,
+    cand_id: np.ndarray,
+    cover: np.ndarray,
+    score_f: np.ndarray,
+    R: np.ndarray,
+    t: np.ndarray,
+    ca_xyz: np.ndarray,
+    polar_atoms: list[str],
+    center_atom_xyz_stub: np.ndarray,
+    atom_order: list[str],
+    params: SolveParams,
+) -> list[int]:
+    """
+    Deterministic greedy solver that scales to large candidate sets by avoiding
+    explicit pairwise conflict graph construction.
+    """
+    n = int(cand_id.shape[0])
+    n_bits = len(polar_atoms)
+    need = (1 << n_bits) - 1
+
+    vdw = _atom_order_vdw(atom_order)
+    ca2 = float(params.ca_prefilter) ** 2
+
+    # Deterministic global order by quality: higher score first, then smaller cand_id.
+    order = np.lexsort((cand_id.astype(np.uint64), -score_f.astype(np.float64)))
+
+    selected: list[int] = []
+    selected_mask = np.zeros((n,), dtype=bool)
+    selected_world: list[np.ndarray] = []
+
+    uncovered = int(need)
+
+    def clashes(i: int) -> bool:
+        if not selected:
+            return False
+        d = ca_xyz[np.asarray(selected, dtype=np.int64)] - ca_xyz[i]
+        d2 = np.einsum("ij,ij->i", d, d)
+        near = np.nonzero(d2 <= ca2)[0]
+        if near.size == 0:
+            return False
+        Ri = R[i]
+        ti = t[i]
+        loc = center_atom_xyz_stub[i].astype(np.float64)
+        wi = np.einsum("ij,kj->ki", Ri, loc) + ti[None, :]
+        for j_local in near.tolist():
+            if _pair_clash_full_atom(wi, selected_world[j_local], vdw=vdw, tol=params.clash_tol):
+                return True
+        return False
+
+    # Phase A: cover all polar atoms.
+    while uncovered != 0 and len(selected) < params.max_res:
+        new_bits = _popcount_u16(cover & np.uint16(uncovered))
+        max_new = int(new_bits.max())
+        if max_new <= 0:
+            break
+
+        picked = False
+        for nb in range(max_new, 0, -1):
+            for i in order.tolist():
+                if selected_mask[i]:
+                    continue
+                if int(new_bits[i]) != nb:
+                    continue
+                if clashes(i):
+                    continue
+                selected.append(i)
+                selected_mask[i] = True
+                uncovered &= ~int(cover[i])
+                Ri = R[i]
+                ti = t[i]
+                loc = center_atom_xyz_stub[i].astype(np.float64)
+                selected_world.append(np.einsum("ij,kj->ki", Ri, loc) + ti[None, :])
+                picked = True
+                break
+            if picked:
+                break
+        if not picked:
+            break
+
+    if uncovered != 0:
+        missing = [polar_atoms[b] for b in range(n_bits) if (uncovered & (1 << b)) != 0]
+        raise RuntimeError(f"Greedy solver failed to cover polar atoms: {missing}")
+
+    # Phase B: fill to min_res with best non-clashing candidates.
+    while len(selected) < params.min_res and len(selected) < params.max_res:
+        picked = False
+        for i in order.tolist():
+            if selected_mask[i]:
+                continue
+            if clashes(i):
+                continue
+            selected.append(i)
+            selected_mask[i] = True
+            Ri = R[i]
+            ti = t[i]
+            loc = center_atom_xyz_stub[i].astype(np.float64)
+            selected_world.append(np.einsum("ij,kj->ki", Ri, loc) + ti[None, :])
+            picked = True
+            break
+        if not picked:
+            break
+
+    if len(selected) < params.min_res:
+        raise RuntimeError(f"Greedy solver could only place {len(selected)} residues (<{params.min_res}).")
+
+    return sorted(selected, key=lambda i: (-float(score_f[i]), int(cand_id[i])))
 
 
 def _dump_motif_pdb(
@@ -276,6 +395,13 @@ def main() -> None:
     ap.add_argument("--ligand-pdb", type=Path, required=True)
     ap.add_argument("--out-json", type=Path, required=True)
     ap.add_argument("--out-pdb", type=Path, required=True)
+    ap.add_argument(
+        "--solver",
+        type=str,
+        default="cp_sat",
+        choices=["cp_sat", "greedy"],
+        help="cp_sat is exact but may not scale; greedy scales to large candidate sets.",
+    )
     ap.add_argument("--min-res", type=int, default=8)
     ap.add_argument("--max-res", type=int, default=15)
     ap.add_argument("--time-limit-s", type=float, default=60.0)
@@ -321,7 +447,6 @@ def main() -> None:
     for r, i in enumerate(order):
         rank[i] = r
 
-    # Build conflicts (motif internal clashes) using CA grid for pruning.
     R, t = _unpack_xform12(xform12)
     # IMPORTANT: Do not assume a specific stub-frame CA local coordinate unless we are sure our
     # stub convention matches rifdock exactly. Prefer the CA atom coordinate from the same
@@ -333,62 +458,89 @@ def main() -> None:
     else:
         ca_local = np.array([1.95280, 0.220007, -1.52486], dtype=np.float64)
         ca_xyz = np.einsum("nij,j->ni", R, ca_local) + t
-    conflicts = _build_conflicts_grid(
-        R=R,
-        t=t,
-        ca_only=ca_xyz,
-        center_atom_xyz_stub=center_atom_xyz_stub,
-        atom_order=atom_order,
-        grid_size=params.grid_size,
-        ca_prefilter=params.ca_prefilter,
-        tol=params.clash_tol,
-    )
 
-    model = cp_model.CpModel()
-    x = [model.NewBoolVar(f"x_{i}") for i in range(n)]
+    selected_sorted: list[int]
+    solver_report: dict[str, Any]
+    if str(args.solver) == "greedy":
+        if center_atom_xyz_stub is None or atom_order is None:
+            raise ValueError("Greedy solver requires full-atom candidates (center_atom_xyz_stub_f32 + atom_order).")
+        selected_sorted = _solve_greedy(
+            cand_id=cand_id,
+            cover=cover,
+            score_f=score_f,
+            R=R,
+            t=t,
+            ca_xyz=ca_xyz,
+            polar_atoms=polar_atoms,
+            center_atom_xyz_stub=center_atom_xyz_stub,
+            atom_order=atom_order,
+            params=params,
+        )
+        solver_report = {"name": "greedy", "status": "GREEDY", "objective_value": None, "n_conflicts": None}
+    else:
+        # Build conflicts (motif internal clashes) using CA grid for pruning.
+        conflicts = _build_conflicts_grid(
+            R=R,
+            t=t,
+            ca_only=ca_xyz,
+            center_atom_xyz_stub=center_atom_xyz_stub,
+            atom_order=atom_order,
+            grid_size=params.grid_size,
+            ca_prefilter=params.ca_prefilter,
+            tol=params.clash_tol,
+        )
 
-    # Cardinality
-    model.Add(sum(x) >= params.min_res)
-    model.Add(sum(x) <= params.max_res)
+        model = cp_model.CpModel()
+        x = [model.NewBoolVar(f"x_{i}") for i in range(n)]
 
-    # Coverage constraints
-    for b, atom_name in enumerate(polar_atoms):
-        idxs = [i for i in range(n) if int(cover[i]) & (1 << b)]
-        if not idxs:
-            raise ValueError(f"No candidates cover polar atom {atom_name} (bit {b}).")
-        model.Add(sum(x[i] for i in idxs) >= 1)
+        # Cardinality
+        model.Add(sum(x) >= params.min_res)
+        model.Add(sum(x) <= params.max_res)
 
-    # Clash constraints
-    for i, j in conflicts:
-        model.Add(x[i] + x[j] <= 1)
+        # Coverage constraints
+        for b, atom_name in enumerate(polar_atoms):
+            idxs = [i for i in range(n) if int(cover[i]) & (1 << b)]
+            if not idxs:
+                raise ValueError(f"No candidates cover polar atom {atom_name} (bit {b}).")
+            model.Add(sum(x[i] for i in idxs) >= 1)
 
-    # Objective: lexicographic (encoded as 1 linear objective):
-    # 1) minimize number of residues (prefer smaller motifs; satisfies user's \"8-15\" as a bound)
-    # 2) maximize total score (within the minimal count)
-    # 3) deterministic tie-break by candidate rank
-    #
-    # Encode as: maximize sum( gain_i - B ) * x_i where B is large enough that any +1 residue loses
-    # against any possible gain difference, thus enforcing \"minimize count\" first.
-    score_int = np.round(np.clip(score_f, -1e6, 1e6) * 1000.0).astype(np.int64)
-    tie_int = (n - 1 - rank).astype(np.int64)  # earlier rank => larger tie
-    gain = score_int + tie_int
-    span = int(params.max_res) * int(gain.max() - gain.min())
-    B = span + 1
-    coeff = gain - B
-    model.Maximize(sum(int(coeff[i]) * x[i] for i in range(n)))
+        # Clash constraints
+        for i, j in conflicts:
+            model.Add(x[i] + x[j] <= 1)
 
-    solver = cp_model.CpSolver()
-    solver.parameters.max_time_in_seconds = params.time_limit_s
-    solver.parameters.num_search_workers = 1
-    solver.parameters.random_seed = 0
-    solver.parameters.log_search_progress = False
+        # Objective: lexicographic (encoded as 1 linear objective):
+        # 1) minimize number of residues (prefer smaller motifs; satisfies user's \"8-15\" as a bound)
+        # 2) maximize total score (within the minimal count)
+        # 3) deterministic tie-break by candidate rank
+        #
+        # Encode as: maximize sum( gain_i - B ) * x_i where B is large enough that any +1 residue loses
+        # against any possible gain difference, thus enforcing \"minimize count\" first.
+        score_int = np.round(np.clip(score_f, -1e6, 1e6) * 1000.0).astype(np.int64)
+        tie_int = (n - 1 - rank).astype(np.int64)  # earlier rank => larger tie
+        gain = score_int + tie_int
+        span = int(params.max_res) * int(gain.max() - gain.min())
+        B = span + 1
+        coeff = gain - B
+        model.Maximize(sum(int(coeff[i]) * x[i] for i in range(n)))
 
-    status = solver.Solve(model)
-    if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
-        raise RuntimeError(f"CP-SAT failed with status {solver.StatusName(status)}")
+        solver = cp_model.CpSolver()
+        solver.parameters.max_time_in_seconds = params.time_limit_s
+        solver.parameters.num_search_workers = 1
+        solver.parameters.random_seed = 0
+        solver.parameters.log_search_progress = False
 
-    selected = [i for i in range(n) if solver.Value(x[i]) == 1]
-    selected_sorted = sorted(selected, key=lambda i: (-float(score_f[i]), int(cand_id[i])))
+        status = solver.Solve(model)
+        if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+            raise RuntimeError(f"CP-SAT failed with status {solver.StatusName(status)}")
+
+        selected = [i for i in range(n) if solver.Value(x[i]) == 1]
+        selected_sorted = sorted(selected, key=lambda i: (-float(score_f[i]), int(cand_id[i])))
+        solver_report = {
+            "name": "cp_sat",
+            "status": solver.StatusName(status),
+            "objective_value": float(solver.ObjectiveValue()),
+            "n_conflicts": len(conflicts),
+        }
 
     # Coverage report
     cov = 0
@@ -410,12 +562,9 @@ def main() -> None:
             "grid_size": params.grid_size,
             "ca_prefilter": params.ca_prefilter,
             "clash_tol": params.clash_tol,
+            "solver": str(args.solver),
         },
-        "solver": {
-            "status": solver.StatusName(status),
-            "objective_value": float(solver.ObjectiveValue()),
-            "n_conflicts": len(conflicts),
-        },
+        "solver": solver_report,
         "n_candidates": n,
         "n_selected": len(selected_sorted),
         "coverage_bitmask": int(cov),

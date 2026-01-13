@@ -48,6 +48,13 @@ def main() -> None:
     ap.add_argument("--top-per-site", type=int, default=200)
     ap.add_argument("--time-limit-s", type=float, default=30.0)
     ap.add_argument(
+        "--solver",
+        type=str,
+        default="cp_sat",
+        choices=["cp_sat", "greedy"],
+        help="Which solver to use for motif selection (default cp_sat).",
+    )
+    ap.add_argument(
         "--vdxform-dir",
         type=Path,
         default=Path("processed/03_vdxform"),
@@ -166,6 +173,8 @@ def main() -> None:
                 str(motif_json),
                 "--out-pdb",
                 str(motif_pdb),
+                "--solver",
+                str(args.solver),
                 "--min-res",
                 "8",
                 "--max-res",

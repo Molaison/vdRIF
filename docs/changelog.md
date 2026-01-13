@@ -7,7 +7,9 @@
 - Refactored candidate generation to be tractable on 1-core:
   - Prunes by **geometric satisfaction + sidechain-facing** before running expensive full-atom ligand clash checks.
   - Uses a deterministic `heapq` top-K per site (stable tie-breaking by `vdm_id`).
+- Added a deterministic `--solver=greedy` option to scale motif selection to ~25k candidates (avoids explicit pairwise conflict graphs); CP-SAT remains default.
 - Verified end-to-end determinism on full libs: `processed/99_harness/mtx_det_full_vdxform_det_top200/report.json`.
+- Verified determinism at large candidate counts with greedy solver: `processed/99_harness/mtx_det_full_vdxform_det_top2000_greedy/report.json`.
 - Verified a real MTX motif output (8 residues) with full coverage and zero severe clashes:
   - `processed/99_harness/mtx_full_vdxform_single/MTX_motif_top200.pdb`
   - `processed/99_harness/mtx_full_vdxform_single/MTX_motif_top200_validation.json`
