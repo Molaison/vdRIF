@@ -14,3 +14,6 @@ logs/**/*
 
 # bv (beads viewer) local config and caches
 .bv/
+
+# Local vendored build metadata (not source)
+vendor/

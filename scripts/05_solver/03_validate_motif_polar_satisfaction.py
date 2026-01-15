@@ -42,6 +42,17 @@ def main() -> None:
     ap.add_argument("-o", "--out", type=Path, required=True)
     ap.add_argument("--hbond-dist", type=float, default=3.5, help="Heavy-atom distance cutoff for Hbond-like satisfaction.")
     ap.add_argument("--ion-dist", type=float, default=4.0, help="Distance cutoff for ionic satisfaction.")
+    ap.add_argument(
+        "--acceptor-model",
+        type=str,
+        default="legacy",
+        choices=["legacy", "plip"],
+        help=(
+            "How to type protein acceptor atoms when satisfying ligand donors. "
+            "'plip' is conservative (no Met/Cys sulfur; no Gln NE2). "
+            "'legacy' is permissive and may overcount satisfaction."
+        ),
+    )
     args = ap.parse_args()
 
     polar = _load_json(args.polar_sites)
@@ -53,7 +64,9 @@ def main() -> None:
 
     # Very simple atom typing for motif residues (heavy atoms only).
     donor_atoms = {"N", "NE", "NE1", "NE2", "NH1", "NH2", "NZ", "ND1", "ND2", "OG", "OG1", "OH"}
-    acceptor_atoms = {"O", "OD1", "OD2", "OE1", "OE2", "OG", "OG1", "OH", "ND1", "NE2", "SD", "SG"}
+    acceptor_atoms_plip = {"O", "OD1", "OD2", "OE1", "OE2", "OG", "OG1", "OH", "ND1"}
+    acceptor_atoms_legacy = set(acceptor_atoms_plip) | {"NE2", "SD", "SG"}
+    acceptor_atoms = acceptor_atoms_plip if str(args.acceptor_model) == "plip" else acceptor_atoms_legacy
     cation_atoms = {"NZ", "NH1", "NH2"}  # minimal
     anion_atoms = {"OD1", "OD2", "OE1", "OE2"}
 
@@ -127,4 +140,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

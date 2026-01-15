@@ -8,6 +8,8 @@ dependencies = [
   "pandas>=2.0",
   "pyarrow>=14",
   "ortools>=9.8",
+  "openbabel",
+  "plip>=3.0.0",
 ]
 
 [project.optional-dependencies]
@@ -17,3 +19,11 @@ rdkit = ["rdkit-pypi>=2022.9.5"]
 
 [tool.uv]
 package = false
+
+[tool.uv.workspace]
+members = [
+    "vendor/openbabel_meta",
+]
+
+[tool.uv.sources]
+openbabel = { workspace = true }

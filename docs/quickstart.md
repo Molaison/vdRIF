@@ -39,6 +39,12 @@ See `docs/vdxform_spec.md` for the current parquet→vdXform conversion spec.
 
 ## Minimal pipeline (MTX example)
 
+## Reality check (2026-01-15)
+
+- The pipeline can generate a **deterministic motif** and validate **ligand–motif** and **motif-internal** vdW overlaps.
+- The “simple satisfaction” validator (`scripts/05_solver/03_validate_motif_polar_satisfaction.py`) is **not equivalent to PLIP**, and in this session we repeatedly saw motifs that “passed” simple checks but **failed PLIP**.
+- If you care about “perfect interactions”, treat **PLIP** as the ground-truth gate and iterate candidate generation + solver until `scripts/05_solver/06_validate_motif_plip.py` reports `all_satisfied: true`.
+
 ### 1) CG mapping (Combs-style)
 
 Example (JSON output used in this repo):
@@ -120,6 +126,40 @@ Runs candidate generation + solver twice and asserts byte-identical outputs:
 bash scripts/99_harness/01_run_mtx_determinism_regression.sh
 ```
 
+Note: the default harness uses `processed/03_vdxform/` (debug vdXform). For MTX, that debug library may not contain any viable candidates for the donor atom `N`, causing a hard failure. Use the full libraries instead:
+
+```bash
+uv run -p 3.11 python scripts/99_harness/01_mtx_determinism_regression.py \
+  --repo-root . \
+  --vdxform-dir processed/03_vdxform_full \
+  --solver greedy \
+  --top-per-site 200 \
+  --time-limit-s 30 \
+  --tag full_vdx_smoke
+```
+
+### 7) Interaction validation (PLIP) — do not skip
+
+Run PLIP on the generated motif PDB and check that every polar atom is contacted by at least one PLIP interaction:
+
+```bash
+uv run -p 3.11 python scripts/05_solver/06_validate_motif_plip.py \
+  --motif-pdb outputs/05_solver/MTX_motif.pdb \
+  --polar-sites outputs/02_polar_sites/MTX_polar_sites.json \
+  -o outputs/05_solver/MTX_motif_plip.json \
+  --keep-plip-outdir
+```
+
+Also always run both clash validators:
+
+```bash
+uv run -p 3.11 python scripts/05_solver/04_validate_motif_clashes.py \
+  --motif-pdb outputs/05_solver/MTX_motif.pdb -o outputs/05_solver/MTX_motif_ligand_clash.json --ligand-resname MTX
+
+uv run -p 3.11 python scripts/05_solver/05_validate_motif_internal_clashes.py \
+  --motif-pdb outputs/05_solver/MTX_motif.pdb -o outputs/05_solver/MTX_motif_internal_clash.json --ligand-resname MTX
+```
+
 ## Environment notes (important)
 
 - This workspace’s system `python3` is 3.6.8, and the system RDKit is broken (missing FreeINCHI symbols).
@@ -170,3 +210,85 @@ Key issues created:
 - `docs/` project docs (see `docs/changelog.md`, `docs/takeaway.md`)
 - `external/` vendored upstream repos for code reading
 - `.beads/` bd issue database
+
+## Implementation strategy (mental model)
+
+This repo’s MVP is **vdM-driven candidate placement + deterministic set cover**, not a native rifgen run yet:
+
+1) **Ligand typing + CG mapping**: produce a Combs-style CG atom map (`outputs/01_cgmap/*.json`) and a polar-atom list (`outputs/02_polar_sites/*_polar_sites.json`).
+2) **Deterministic ligand site frames**: for each CG mapping entry, build an iFG frame on the ligand (`outputs/02_polar_sites/*_site_frames.json`). For symmetric CGs (notably `coo`), emit swapped frames to avoid label/handedness artifacts.
+3) **vdXform library**: convert Combs parquet vdMs into a compact NPZ containing, per vdM instance, an `X_ifg_to_stub` transform and the **interaction residue** atom coordinates in the rifdock stub frame.
+4) **Candidate generation** (`scripts/04_candidates/01_generate_candidates.py`):
+   - For each site frame, load the corresponding `vdxform_<cg>.npz`.
+   - Compose placement `X_world_stub = X_world_ifg ∘ X_ifg_to_stub`.
+   - Fast prefilter by ligand clash with N/CA/C/CB, then compute a **satisfaction bitmask** for the polar atoms assigned to this site.
+   - Apply sidechain-facing filtering and a full-atom ligand clash check.
+   - Keep top-K per site (deterministic ties by `vdm_id`).
+5) **Motif solving** (`scripts/05_solver/01_solve_motif.py`): choose 8–15 candidates that cover all polar bits while avoiding residue–residue clashes; write motif PDB.
+
+## Session takeaways: recurring problems + what we changed
+
+### A) “Looks satisfied” but PLIP says no
+
+Symptom:
+- `03_validate_motif_polar_satisfaction.py` reported `all_satisfied: true`, but `06_validate_motif_plip.py` still reported unsatisfied polar atoms.
+
+Root causes we hit:
+- **Over-permissive motif atom typing**: we previously treated `MET:SD` and `CYS:SG` as acceptors (and even `GLN:NE2` as acceptor), which can create false-positive “satisfaction” by pure distance.
+- **Ligand donor geometry mismatch**: using ligand H coordinates directly from the input PDB can be wrong/unphysical (even if the ligand has explicit Hs), which breaks donor-angle/HA-distance gating and disagrees with PLIP.
+
+What to do:
+- Always gate success using `scripts/05_solver/06_validate_motif_plip.py`.
+- For PLIP-aligned runs, keep acceptor typing conservative (Met/Cys sulfur are not acceptors in PLIP/OpenBabel): use `--acceptor-model plip` where available.
+- For ligand donors, prefer OpenBabel-rebuilt H coordinates to align with PLIP.
+
+### B) Severe “motif-internal” clashes despite passing ligand clash checks
+
+Symptom:
+- Motif did not clash with ligand, but residues clashed badly with each other (user-visible “motif not self-compatible”).
+
+Root cause:
+- We originally only validated **ligand–motif** clashes. Internal clashes require a separate check.
+
+What to do:
+- Always run `scripts/05_solver/05_validate_motif_internal_clashes.py` and fail the run if it reports overlaps.
+
+### C) “Sampling too small” / unexpectedly few candidates
+
+Symptom:
+- Only a tiny number of candidates survived, despite vdM libraries being huge.
+
+Root causes we hit:
+- Using **debug vdXform** (capped parquet conversion) produces tiny libraries (`processed/03_vdxform/*/vdxform_*.npz` ~1.5MB each). This is only for smoke tests and can make coverage look impossible.
+- Aggressive geometric gates + clash gates can wipe out all candidates for some polar atoms (especially ligand donors if H geometry is inconsistent).
+
+What to do:
+- Use the full libraries under `processed/03_vdxform_full/` when evaluating feasibility.
+- Increase `--top-per-site` and consider `--top-per-site-per-atom` to avoid rare bits getting pruned by a shared heap.
+
+### D) vdM semantics confusion: which residue should become the “motif residue”?
+
+This was a major source of incorrect motifs early on.
+
+Ground truth in Combs2024 parquet (verify in `external/Combs2024/combs2/design/functions.py:get_extended`):
+- `chain == 'Y'`: iFG/CG atoms (used for superposition / defines the iFG frame).
+- `chain == 'X'`: the **segment in the protein** around the interacting residue (typically resnum 9/10/11).
+- The “interaction residue” is **`chain=='X' & resnum==10`** (what we export/place as motif residue in MVP).
+
+If you export/place the iFG residue itself, you can accidentally overlay ligand-matched atoms and generate nonsense.
+
+### E) Scaling mismatch vs rifgen
+
+rifgen assumes a relatively small, fixed rotamer set per amino acid, while vdM libraries can be millions:
+- Any approach that “just loops over vdMs” will bottleneck on I/O and on full-atom clash checks.
+- The MVP therefore uses (1) per-site top-K truncation, (2) vectorized prefilters, and (3) a deterministic solver.
+
+### F) Beads gotcha: repo mismatch
+
+If `bd ready` warns `DATABASE MISMATCH DETECTED`, run:
+
+```bash
+bd migrate --update-repo-id
+```
+
+…before syncing, otherwise beads sync can delete/lose issues across clones.

@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+from openbabel import openbabel as ob
 from rdkit import Chem
 
 
@@ -73,6 +74,68 @@ def _ligand_heavy_atoms(mol: Chem.Mol) -> tuple[list[str], np.ndarray, np.ndarra
         vdw.append(vdw_by_elem.get(a.GetSymbol(), 1.70))
 
     return names, np.asarray(xyz, dtype=np.float64), np.asarray(vdw, dtype=np.float64)
+
+
+def _ligand_donor_h_xyz_by_atom_name(mol: Chem.Mol) -> dict[str, np.ndarray]:
+    """
+    Map heavy-atom name -> (nH,3) coordinates for directly attached hydrogens.
+
+    Used to reduce false-positive "ligand donor satisfied" calls by enforcing
+    a crude D-H...A geometry constraint (based on explicit H coordinates in the PDB).
+    """
+    conf = mol.GetConformer()
+    out: dict[str, list[list[float]]] = {}
+    for a in mol.GetAtoms():
+        if a.GetSymbol() == "H":
+            continue
+        hs = [nb for nb in a.GetNeighbors() if nb.GetSymbol() == "H"]
+        if not hs:
+            continue
+        an = _atom_name(a)
+        coords: list[list[float]] = []
+        for h in hs:
+            p = conf.GetAtomPosition(h.GetIdx())
+            coords.append([p.x, p.y, p.z])
+        out[an] = coords
+    return {k: np.asarray(v, dtype=np.float64) for k, v in out.items()}
+
+
+def _ligand_donor_h_xyz_by_atom_name_openbabel(pdb_path: Path) -> dict[str, np.ndarray]:
+    """
+    Map heavy-atom name -> (nH,3) H coordinates using OpenBabel.
+
+    Rationale:
+    - Input PDB H coordinates can be missing or arbitrary.
+    - PLIP uses OpenBabel; to reduce false positives/negatives for ligand-donor geometry,
+      we rebuild hydrogens (keeping heavy atoms fixed) and use those coordinates.
+    """
+    conv = ob.OBConversion()
+    if not conv.SetInFormat("pdb"):
+        raise RuntimeError("OpenBabel: failed to set PDB input format")
+    mol = ob.OBMol()
+    if not conv.ReadFile(mol, str(pdb_path)):
+        raise ValueError(f"OpenBabel: failed to read ligand PDB: {pdb_path}")
+    if mol.NumAtoms() <= 0:
+        raise ValueError(f"OpenBabel: ligand PDB has no atoms: {pdb_path}")
+
+    # Rebuild hydrogens without moving heavy atoms.
+    mol.DeleteHydrogens()
+    mol.AddHydrogens()
+
+    out: dict[str, list[list[float]]] = {}
+    for atom in ob.OBMolAtomIter(mol):
+        if int(atom.GetAtomicNum()) == 1:
+            continue
+        res = atom.GetResidue()
+        an = res.GetAtomID(atom).strip() if res is not None else f"ATOM{atom.GetIdx()}"
+        hs: list[list[float]] = []
+        for nb in ob.OBAtomAtomIter(atom):
+            if int(nb.GetAtomicNum()) != 1:
+                continue
+            hs.append([float(nb.GetX()), float(nb.GetY()), float(nb.GetZ())])
+        if hs:
+            out[an] = hs
+    return {k: np.asarray(v, dtype=np.float64) for k, v in out.items()}
 
 
 def _unpack_xform12(x12: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -288,6 +351,16 @@ def main() -> None:
     ap.add_argument("--out-prefix", type=Path, required=True, help="Prefix for output files (npz + json).")
     ap.add_argument("--chunk-size", type=int, default=5000)
     ap.add_argument("--top-per-site", type=int, default=2000)
+    ap.add_argument(
+        "--top-per-site-per-atom",
+        type=int,
+        default=0,
+        help=(
+            "If >0, keep up to this many candidates per (site, polar-atom bit) before applying the "
+            "global --top-per-site cap. This helps when some polar atoms are rare and get pruned by "
+            "a single shared heap."
+        ),
+    )
     ap.add_argument("--clash-tol", type=float, default=0.5)
     ap.add_argument(
         "--exclude-aa3",
@@ -299,6 +372,38 @@ def main() -> None:
         "--sidechain-only-satisfaction",
         action="store_true",
         help="If set, exclude backbone N/O atoms from donor/acceptor satisfaction tests (sidechain-only).",
+    )
+    ap.add_argument(
+        "--min-prot-donor-angle-deg",
+        type=float,
+        default=110.0,
+        help=(
+            "Minimum B-D-A angle (deg) for protein donors satisfying ligand acceptors. "
+            "B is a donor 'base' atom (e.g., CE for Lys NZ)."
+        ),
+    )
+    ap.add_argument(
+        "--min-lig-donor-angle-deg",
+        type=float,
+        default=90.0,
+        help="Minimum H-D-A angle (deg) for ligand donors satisfying protein acceptors (uses explicit H coords).",
+    )
+    ap.add_argument(
+        "--max-lig-donor-ha-dist",
+        type=float,
+        default=3.2,
+        help="Maximum H...A distance (Angstrom) for ligand donor satisfaction (default 3.2).",
+    )
+    ap.add_argument(
+        "--acceptor-model",
+        type=str,
+        default="legacy",
+        choices=["legacy", "plip"],
+        help=(
+            "How to type protein acceptor atoms when satisfying ligand donors. "
+            "'plip' is conservative (no Met/Cys sulfur; no Gln NE2). "
+            "'legacy' is permissive and may overcount satisfaction."
+        ),
     )
     ap.add_argument(
         "--require-sidechain-facing",
@@ -339,6 +444,7 @@ def main() -> None:
     ligand = _load_pdb_mol(args.ligand_pdb)
     lig_names, lig_xyz, lig_vdw = _ligand_heavy_atoms(ligand)
     lig_centroid = lig_xyz.mean(axis=0)
+    lig_donor_h_xyz_by_name = _ligand_donor_h_xyz_by_atom_name_openbabel(args.ligand_pdb)
 
     # Residue atoms used for clash filtering, in rifdock BackboneActor local coords (Angstrom)
     # See external/rifdock/schemelib/scheme/actor/BackboneActor.hh get_n_ca_c/get_cb.
@@ -379,12 +485,19 @@ def main() -> None:
 
     # Motif atom typing based on atom names (MVP; heavy atoms only)
     donor_atoms = {"N", "NE", "NE1", "NE2", "NH1", "NH2", "NZ", "ND1", "ND2", "OG", "OG1", "OH"}
-    acceptor_atoms = {"O", "OD1", "OD2", "OE1", "OE2", "OG", "OG1", "OH", "ND1", "NE2", "SD", "SG"}
+    acceptor_atoms_plip = {"O", "OD1", "OD2", "OE1", "OE2", "OG", "OG1", "OH", "ND1"}
+    # Legacy (permissive) acceptor typing kept for backwards-compatibility with earlier debugging runs.
+    acceptor_atoms_legacy = set(acceptor_atoms_plip) | {"NE2", "SD", "SG"}
+    acceptor_atoms = acceptor_atoms_plip if str(args.acceptor_model) == "plip" else acceptor_atoms_legacy
     cation_atoms = {"NZ", "NH1", "NH2"}
     anion_atoms = {"OD1", "OD2", "OE1", "OE2"}
     backbone_atoms = {"N", "C", "O", "CA"}
 
     exclude_aa3 = {x.strip().upper() for x in str(args.exclude_aa3).split(",") if x.strip()}
+
+    min_prot_donor_angle = math.radians(float(args.min_prot_donor_angle_deg))
+    min_lig_donor_angle = math.radians(float(args.min_lig_donor_angle_deg))
+    max_lig_donor_ha2 = float(args.max_lig_donor_ha_dist) ** 2
 
     for site in sites:
         # Only polar atoms explicitly associated with this ligand site-frame are considered coverable from it.
@@ -441,6 +554,34 @@ def main() -> None:
         else:
             donor_idx = atom_indices(donor_atoms)
             acceptor_idx = atom_indices(acceptor_atoms)
+
+        # For protein donor angle filtering (B-D-A), choose a deterministic "base" heavy atom for each donor atom.
+        donor_base_name = {
+            # backbone N-H
+            "N": "CA",
+            # sidechain N-H donors
+            "NZ": "CE",  # Lys
+            "NE": "CD",  # Arg
+            "NH1": "CZ",  # Arg
+            "NH2": "CZ",  # Arg
+            "ND2": "CG",  # Asn
+            "NE2": "CD",  # Gln
+            "ND1": "CG",  # His
+            "NE1": "CD1",  # Trp
+            # hydroxyls
+            "OG": "CB",  # Ser
+            "OG1": "CB",  # Thr
+            "OH": "CZ",  # Tyr
+        }
+        donor_base_idx: list[int] = []
+        for di in donor_idx:
+            dnm = atom_order[di]
+            bnm = donor_base_name.get(dnm)
+            if bnm is None or bnm not in atom_order:
+                donor_base_idx.append(-1)
+            else:
+                donor_base_idx.append(int(atom_order.index(bnm)))
+
         cation_idx = atom_indices(cation_atoms)
         anion_idx = atom_indices(anion_atoms)
 
@@ -454,23 +595,36 @@ def main() -> None:
         )
         prior[~np.isfinite(prior)] = -1e9
 
-        # Keep top candidates for this site (min-heap style arrays)
-        top_k = int(args.top_per_site)
-        # Deterministic top-k:
+        # Keep top candidates for this site.
+        top_k_site = int(args.top_per_site)
+        top_k_per_atom = int(args.top_per_site_per_atom)
+
+        # Deterministic ordering key:
         # - primary: higher score is better
         # - tie: smaller vdm_id is better
-        # We implement this with a min-heap whose root is the *worst* element:
-        # key = (score, -vdm_id)  => for equal score, larger vdm_id yields smaller key (worse).
-        heap: list[tuple[float, int, int, int]] = []  # (score, -vdm_id, idx, cov)
+        # Implemented with a min-heap where the root is the *worst* element:
+        # key = (score, -vdm_id)
 
-        def maybe_add(idx: int, sc: float, cov: int) -> None:
+        heap_all: list[tuple[float, int, int, int]] = []  # (score, -vdm_id, idx, cov)
+        heaps_by_bit: dict[int, list[tuple[float, int, int, int]]] = {bit: [] for _an, bit, _roles, _pxyz in site_polar}
+
+        def _maybe_add_to_heap(h: list[tuple[float, int, int, int]], limit: int, idx: int, sc: float, cov: int) -> None:
             v = int(vdm_ids[idx])
             item = (float(sc), -v, int(idx), int(cov))
-            if len(heap) < top_k:
-                heapq.heappush(heap, item)
+            if len(h) < limit:
+                heapq.heappush(h, item)
                 return
-            if item[:2] > heap[0][:2]:
-                heapq.heapreplace(heap, item)
+            if item[:2] > h[0][:2]:
+                heapq.heapreplace(h, item)
+
+        def maybe_add(idx: int, sc: float, cov: int) -> None:
+            if top_k_per_atom > 0:
+                # Insert into each per-bit heap for the bits this candidate satisfies.
+                for bit in heaps_by_bit.keys():
+                    if cov & (1 << bit):
+                        _maybe_add_to_heap(heaps_by_bit[bit], top_k_per_atom, idx, sc, cov)
+            else:
+                _maybe_add_to_heap(heap_all, top_k_site, idx, sc, cov)
 
         n = vdm_ids.shape[0]
         chunk = int(args.chunk_size)
@@ -512,6 +666,18 @@ def main() -> None:
                 return np.einsum("nij,nkj->nki", Rw_ok, loc) + tw_ok[:, None, :]
 
             donors_w = world_coords_subset(donor_idx)
+            # donors_base_w is aligned with donors_w (same second dimension),
+            # filled with NaNs where we cannot identify a base atom.
+            donors_base_w = np.full_like(donors_w, np.nan)
+            if donors_w.shape[1] > 0:
+                unique_base = sorted({b for b in donor_base_idx if b >= 0})
+                if unique_base:
+                    base_w_unique = world_coords_subset(unique_base)  # (n,nb,3)
+                    base_idx_to_col = {b: j for j, b in enumerate(unique_base)}
+                    for j_d, b in enumerate(donor_base_idx):
+                        if b < 0:
+                            continue
+                        donors_base_w[:, j_d, :] = base_w_unique[:, base_idx_to_col[b], :]
             acceptors_w = world_coords_subset(acceptor_idx)
             cations_w = world_coords_subset(cation_idx)
             anions_w = world_coords_subset(anion_idx)
@@ -535,9 +701,66 @@ def main() -> None:
                 sat_mask = np.ones((ok_local.size,), dtype=bool)
                 for need_role in need:
                     if need_role == "donor":
-                        sat_mask &= _min_d2_all(donors_w, pxyz) <= hbd2
+                        # Protein donor -> ligand acceptor:
+                        # distance + crude donor angle at donor (B-D-A) using a donor base atom.
+                        if donors_w.shape[1] == 0:
+                            sat_mask &= False
+                            continue
+                        d = donors_w - pxyz[None, None, :]
+                        d2 = np.einsum("nkj,nkj->nk", d, d)
+                        d2 = np.where(np.isfinite(d2), d2, float("inf"))
+                        dist_ok = d2 <= hbd2
+
+                        v_db = donors_base_w - donors_w
+                        v_da = (pxyz[None, None, :] - donors_w)
+                        dot = np.einsum("nkj,nkj->nk", v_db, v_da)
+                        n_db = np.linalg.norm(v_db, axis=2)
+                        n_da = np.linalg.norm(v_da, axis=2)
+                        denom = n_db * n_da
+                        cos = np.where(denom > 0, dot / denom, np.nan)
+                        cos = np.clip(cos, -1.0, 1.0)
+                        ang = np.arccos(cos)
+                        ang_ok = np.isfinite(ang) & (ang >= min_prot_donor_angle)
+
+                        sat_mask &= (dist_ok & ang_ok).any(axis=1)
                     elif need_role == "acceptor":
-                        sat_mask &= _min_d2_all(acceptors_w, pxyz) <= hbd2
+                        # Ligand donor -> protein acceptor:
+                        # require protein acceptor within D-A distance AND consistent with explicit ligand H direction.
+                        if acceptors_w.shape[1] == 0:
+                            sat_mask &= False
+                            continue
+                        hs = lig_donor_h_xyz_by_name.get(str(_an))
+                        if hs is None or hs.size == 0:
+                            # Fallback to distance-only if ligand H coordinates are missing.
+                            sat_mask &= _min_d2_all(acceptors_w, pxyz) <= hbd2
+                            continue
+
+                        # Vector from donor heavy (D) to acceptor (A)
+                        v_da = acceptors_w - pxyz[None, None, :]
+                        d2 = np.einsum("nkj,nkj->nk", v_da, v_da)
+                        d2 = np.where(np.isfinite(d2), d2, float("inf"))
+                        dist_ok = d2 <= hbd2
+
+                        sat_any_h = np.zeros((ok_local.size,), dtype=bool)
+                        for hxyz in hs:
+                            v_dh = hxyz[None, None, :] - pxyz[None, None, :]  # (1,1,3)
+                            v_ha = acceptors_w - hxyz[None, None, :]  # (n,k,3)
+                            ha2 = np.einsum("nkj,nkj->nk", v_ha, v_ha)
+                            ha2 = np.where(np.isfinite(ha2), ha2, float("inf"))
+                            ha_ok = ha2 <= max_lig_donor_ha2
+
+                            dot = np.einsum("nkj,j->nk", v_da, v_dh.reshape(3))
+                            n_da = np.linalg.norm(v_da, axis=2)
+                            n_dh = float(np.linalg.norm(v_dh.reshape(3)))
+                            denom = n_da * n_dh
+                            cos = np.where(denom > 0, dot / denom, np.nan)
+                            cos = np.clip(cos, -1.0, 1.0)
+                            ang = np.arccos(cos)
+                            ang_ok = np.isfinite(ang) & (ang >= min_lig_donor_angle)
+
+                            sat_any_h |= (dist_ok & ha_ok & ang_ok).any(axis=1)
+
+                        sat_mask &= sat_any_h
                     elif need_role == "cation":
                         sat_mask &= _min_d2_all(cations_w, pxyz) <= ion2
                     elif need_role == "anion":
@@ -668,7 +891,30 @@ def main() -> None:
                 maybe_add(int(idx), sc, int(cov))
 
         # Emit this site's kept candidates
-        kept = sorted(heap, key=lambda x: (-x[0], -x[1]))
+        if top_k_per_atom > 0:
+            # 1) Guarantee at least one candidate per bit (if available)
+            chosen: dict[int, tuple[float, int, int, int]] = {}
+            for bit, h in heaps_by_bit.items():
+                if not h:
+                    continue
+                best_item = max(h, key=lambda x: (x[0], x[1]))  # max by (score, -vdm_id)
+                chosen[best_item[2]] = best_item  # key by idx
+
+            # 2) Pool remaining per-bit candidates and fill up to top_k_site
+            pool: dict[int, tuple[float, int, int, int]] = dict(chosen)
+            for h in heaps_by_bit.values():
+                for item in h:
+                    # same idx should have same cov; keep best score deterministically
+                    idx = item[2]
+                    prev = pool.get(idx)
+                    if prev is None or item[:2] > prev[:2]:
+                        pool[idx] = item
+
+            kept = sorted(pool.values(), key=lambda x: (-x[0], -x[1]))
+            if top_k_site > 0 and len(kept) > top_k_site:
+                kept = kept[:top_k_site]
+        else:
+            kept = sorted(heap_all, key=lambda x: (-x[0], -x[1]))
         for sc, neg_vdm, idx, cov in kept:
             cid = _stable_u64(f"{site.site_id}|{int(vdm_ids[idx])}")
             cand_id.append(np.uint64(cid))

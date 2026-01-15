@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 import numpy as np
+from openbabel import openbabel as ob
 from rdkit import Chem
 from rdkit import RDConfig
 from rdkit.Chem import ChemicalFeatures
@@ -122,18 +123,79 @@ def _iter_sites(mol: Chem.Mol, include_h: bool) -> Iterable[AtomSite]:
         )
 
 
+def _load_ob_mol(pdb_path: Path) -> ob.OBMol:
+    conv = ob.OBConversion()
+    if not conv.SetInFormat("pdb"):
+        raise RuntimeError("OpenBabel: failed to set PDB input format")
+    mol = ob.OBMol()
+    if not conv.ReadFile(mol, str(pdb_path)):
+        raise ValueError(f"OpenBabel: failed to read ligand PDB: {pdb_path}")
+    if mol.NumAtoms() <= 0:
+        raise ValueError(f"OpenBabel: ligand PDB has no atoms: {pdb_path}")
+    return mol
+
+
+def _iter_sites_openbabel(mol: ob.OBMol, include_h: bool) -> Iterable[AtomSite]:
+    for atom in ob.OBMolAtomIter(mol):
+        atomic_num = int(atom.GetAtomicNum())
+        if not include_h and atomic_num == 1:
+            continue
+
+        res = atom.GetResidue()
+        atom_name = res.GetAtomID(atom).strip() if res is not None else f"ATOM{atom.GetIdx()}"
+
+        roles_set: set[str] = set()
+        if atom.IsHbondDonor():
+            roles_set.add("donor")
+        if atom.IsHbondAcceptor():
+            roles_set.add("acceptor")
+
+        chg = int(atom.GetFormalCharge())
+        if chg > 0:
+            roles_set.add("cation")
+        elif chg < 0:
+            roles_set.add("anion")
+
+        if not roles_set:
+            continue
+
+        yield AtomSite(
+            atom_name=atom_name,
+            atom_idx=int(atom.GetIdx()),  # 1-based OpenBabel atom index
+            element=atom.GetType() if atomic_num == 0 else ob.GetSymbol(atomic_num),
+            formal_charge=chg,
+            x=float(atom.GetX()),
+            y=float(atom.GetY()),
+            z=float(atom.GetZ()),
+            roles=tuple(sorted(roles_set)),
+        )
+
+
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Extract ligand polar sites (HBD/HBA/ion) using RDKit features.")
+    ap = argparse.ArgumentParser(
+        description="Extract ligand polar sites (HBD/HBA/ion). Backends: rdkit (default) or openbabel (PLIP-aligned)."
+    )
     ap.add_argument("ligand_pdb", type=Path)
     ap.add_argument("-o", "--out", type=Path, required=True)
     ap.add_argument("--include-h", action="store_true", help="Include hydrogen atoms if they carry roles (rare).")
+    ap.add_argument(
+        "--backend",
+        type=str,
+        default="rdkit",
+        choices=["rdkit", "openbabel"],
+        help="Perception backend for donors/acceptors/charges. 'openbabel' is closest to PLIP.",
+    )
     args = ap.parse_args()
 
-    mol = _load_pdb_ligand(args.ligand_pdb)
-    sites = sorted(_iter_sites(mol, include_h=bool(args.include_h)), key=lambda s: (s.atom_name, s.atom_idx))
+    if str(args.backend) == "openbabel":
+        mol_ob = _load_ob_mol(args.ligand_pdb)
+        sites = sorted(_iter_sites_openbabel(mol_ob, include_h=bool(args.include_h)), key=lambda s: (s.atom_name, s.atom_idx))
+    else:
+        mol = _load_pdb_ligand(args.ligand_pdb)
+        sites = sorted(_iter_sites(mol, include_h=bool(args.include_h)), key=lambda s: (s.atom_name, s.atom_idx))
 
     payload = {
-        "input": {"ligand_pdb": str(args.ligand_pdb)},
+        "input": {"ligand_pdb": str(args.ligand_pdb), "backend": str(args.backend)},
         "n_sites": len(sites),
         "sites": [s.to_json() for s in sites],
     }
