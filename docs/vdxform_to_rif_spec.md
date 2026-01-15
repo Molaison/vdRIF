@@ -25,6 +25,40 @@ vdXform entry semantics:
 
 ### Option 1: Intermediate “vdM-RIF table” (Python-first, mmap-friendly)
 
+#### Current MVP implementation (Jan 2026): export placements + ligand-specific irot library
+
+We currently export an **intermediate** format that does **not** require matching rifdock’s `XformHash` in Python.
+Instead, we export:
+
+1) a per-candidate placement list (world stub xform + irot id + score + sat indices)
+2) a ligand-specific irot library (irot id → AA type + CG + Combs cluster + representative atoms)
+
+This is enough for a future C++ tool to insert into a real rifdock `XformMap` using rifdock’s native hasher.
+
+Script:
+- `scripts/06_rif_export/01_export_rif_inputs.py`
+
+Inputs:
+- `--candidates-npz` / `--candidates-meta` from `scripts/04_candidates/01_generate_candidates.py`
+- `--site-frames` (needed to map `site_index` → `cg`)
+
+Outputs (given `--out-prefix processed/06_rif_export/<tag>/MTX`):
+- `processed/06_rif_export/<tag>/MTX_placements.npz`
+  - `xform_world_stub_12_f32` (N,12) packed (R|t)
+  - `irot_id_u16` (N,) ligand-specific rotamer id
+  - `score_f32` (N,) by default negated so `score<=0` (rifdock ignores `score>0`)
+  - `sat1_i16`, `sat2_i16` (N,) indices into `polar_atoms` (or -1)
+- `processed/06_rif_export/<tag>/MTX_irot_lib.npz`
+  - `irot_id_u16` (M,)
+  - `aa3` (M,)
+  - `cg` (M,)
+  - `cluster_number_i32` (M,)
+  - `center_atom_xyz_stub_f32` (M,n_atoms,3) representative residue atoms (stub-local)
+  - `repr_cand_id_u64` (M,) for debugging
+- `processed/06_rif_export/<tag>/MTX_meta.json` (includes `polar_atoms` and counts)
+
+Current MTX numbers (full vdXform, `top_per_site=2000`): `n_candidates=25083`, `n_irots=2505`.
+
 Store a sparse 6D hash table with:
 - `bin_key`: discretized stub xform (cart + orientation bins; deterministic)
 - `entries`: top‑K records, each record contains:
@@ -88,4 +122,3 @@ The Python pipeline (`scripts/04_candidates` + `scripts/05_solver`) remains the 
 - the final motif must pass:
   - `scripts/05_solver/03_validate_motif_polar_satisfaction.py`
   - `scripts/05_solver/04_validate_motif_clashes.py`
-

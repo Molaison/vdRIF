@@ -367,6 +367,7 @@ def main() -> None:
     cover_mask: list[np.uint16] = []
     xform_world_stub_12: list[np.ndarray] = []
     center_atom_xyz_stub: list[np.ndarray] = []
+    cluster_number: list[np.int32] = []
 
     # Union of polar atoms that are coverable by the site-frames (not geometric satisfaction).
     coverage_union = 0
@@ -405,6 +406,10 @@ def main() -> None:
 
         vdx = _load_vdxform_npz(vdx_path)
         vdm_ids = vdx["vdm_id_u64"].astype(np.uint64)
+        cluster_number_i32 = vdx.get("cluster_number_i32")
+        if cluster_number_i32 is None:
+            raise KeyError(f"vdXform missing cluster_number_i32: {vdx_path}")
+        cluster_number_i32 = cluster_number_i32.astype(np.int32)
         aa_arr = _as_aa3_str(vdx["aa"])
         x_ifg_to_stub_12 = vdx["xform_ifg_to_stub_12_f32"]
         R_ifg_to_stub, t_ifg_to_stub = _unpack_xform12(x_ifg_to_stub_12)
@@ -672,6 +677,7 @@ def main() -> None:
             aa3.append(str(aa_arr[idx]))
             score.append(np.float32(sc))
             cover_mask.append(np.uint16(cov))
+            cluster_number.append(np.int32(cluster_number_i32[idx]))
             satisfied_union |= int(cov)
 
             # Compute world stub xform12 for output
@@ -711,6 +717,7 @@ def main() -> None:
     aa3_arr = np.array([aa3[i] for i in keep_idx], dtype="U3")
     score_arr = np.array([score[i] for i in keep_idx], dtype=np.float32)
     cover_arr = np.array([cover_mask[i] for i in keep_idx], dtype=np.uint16)
+    cluster_number_arr = np.array([cluster_number[i] for i in keep_idx], dtype=np.int32)
     xw12_arr = np.stack([xform_world_stub_12[i] for i in keep_idx], axis=0).astype(np.float32)
     center_stub_arr = np.stack([center_atom_xyz_stub[i] for i in keep_idx], axis=0).astype(np.float32)
 
@@ -722,6 +729,7 @@ def main() -> None:
         cand_id_u64=cand_id_arr,
         site_index_u16=site_idx_arr,
         vdm_id_u64=vdm_id_arr,
+        cluster_number_i32=cluster_number_arr,
         aa3=aa3_arr,
         score_f32=score_arr,
         cover_mask_u16=cover_arr,
