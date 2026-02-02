@@ -216,7 +216,7 @@ Key issues created:
 This repo’s MVP is **vdM-driven candidate placement + deterministic set cover**, not a native rifgen run yet:
 
 1) **Ligand typing + CG mapping**: produce a Combs-style CG atom map (`outputs/01_cgmap/*.json`) and a polar-atom list (`outputs/02_polar_sites/*_polar_sites.json`).
-2) **Deterministic ligand site frames**: for each CG mapping entry, build an iFG frame on the ligand (`outputs/02_polar_sites/*_site_frames.json`). For symmetric CGs (notably `coo`), emit swapped frames to avoid label/handedness artifacts.
+2) **Deterministic ligand site frames**: for each CG mapping entry, build an iFG frame on the ligand (`outputs/02_polar_sites/*_site_frames.json`). For symmetric CGs (e.g., `coo` OD1/OD2 and aromatic `ph`/`phenol` CD1/CD2), emit swapped frames to avoid label/handedness artifacts.
 3) **vdXform library**: convert Combs parquet vdMs into a compact NPZ containing, per vdM instance, an `X_ifg_to_stub` transform and the **interaction residue** atom coordinates in the rifdock stub frame.
 4) **Candidate generation** (`scripts/04_candidates/01_generate_candidates.py`):
    - For each site frame, load the corresponding `vdxform_<cg>.npz`.

@@ -93,6 +93,14 @@ Implementation is in the vendored rifdock submodule:
 
 This removes the hard 512/1024 id cap for Combs cluster counts in the ~1k–4k range, at the cost of larger per-voxel storage.
 
+### Quantitative tradeoff (packed entry sizes)
+
+From rifdock’s `BOOST_STATIC_ASSERT(sizeof(...))` checks:
+- `Rot10Score6Sat16` (10-bit ids, `uint16_t` backing): `sizeof(XformMap::Map::value_type) == 64` bytes
+- `Rot12ScoreSat96` (12-bit ids, `uint32_t` backing): `sizeof(XformMap::Map::value_type) == 96` bytes
+
+So the *per-occupied-voxel* payload grows by ~1.5× (96/64). Total `.rif.gz` size and memory usage still scale primarily with the number of occupied voxels, but this change is a real multiplier on that footprint.
+
 ## Still useful: compression as an optimization
 
 Even with C2, compression can remain valuable for performance/memory (smaller irot libraries, faster generation), but it is no longer a correctness blocker.

@@ -5,14 +5,16 @@ import argparse
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable
+from typing import TYPE_CHECKING, Any, Iterable
 
 import numpy as np
-from openbabel import openbabel as ob
 from rdkit import Chem
 from rdkit import RDConfig
 from rdkit.Chem import ChemicalFeatures
 from rdkit.Chem import rdDetermineBonds
+
+if TYPE_CHECKING:  # pragma: no cover
+    from openbabel import openbabel as ob  # type: ignore[import-not-found]
 
 
 @dataclass(frozen=True)
@@ -124,6 +126,13 @@ def _iter_sites(mol: Chem.Mol, include_h: bool) -> Iterable[AtomSite]:
 
 
 def _load_ob_mol(pdb_path: Path) -> ob.OBMol:
+    try:
+        from openbabel import openbabel as ob  # type: ignore[import-not-found]
+    except Exception as e:  # pragma: no cover
+        raise ImportError(
+            "OpenBabel backend requested but `openbabel` could not be imported. "
+            "Install/fix OpenBabel, or re-run with `--backend rdkit`."
+        ) from e
     conv = ob.OBConversion()
     if not conv.SetInFormat("pdb"):
         raise RuntimeError("OpenBabel: failed to set PDB input format")
@@ -136,6 +145,13 @@ def _load_ob_mol(pdb_path: Path) -> ob.OBMol:
 
 
 def _iter_sites_openbabel(mol: ob.OBMol, include_h: bool) -> Iterable[AtomSite]:
+    try:
+        from openbabel import openbabel as ob  # type: ignore[import-not-found]
+    except Exception as e:  # pragma: no cover
+        raise ImportError(
+            "OpenBabel backend requested but `openbabel` could not be imported. "
+            "Install/fix OpenBabel, or re-run with `--backend rdkit`."
+        ) from e
     for atom in ob.OBMolAtomIter(mol):
         atomic_num = int(atom.GetAtomicNum())
         if not include_h and atomic_num == 1:

@@ -8,11 +8,13 @@ import heapq
 import math
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
-from openbabel import openbabel as ob
 from rdkit import Chem
+
+if TYPE_CHECKING:  # pragma: no cover
+    from openbabel import openbabel as ob  # type: ignore[import-not-found]
 
 
 def _stable_u64(s: str) -> np.uint64:
@@ -109,6 +111,13 @@ def _ligand_donor_h_xyz_by_atom_name_openbabel(pdb_path: Path) -> dict[str, np.n
     - PLIP uses OpenBabel; to reduce false positives/negatives for ligand-donor geometry,
       we rebuild hydrogens (keeping heavy atoms fixed) and use those coordinates.
     """
+    try:
+        from openbabel import openbabel as ob  # type: ignore[import-not-found]
+    except Exception as e:  # pragma: no cover
+        raise ImportError(
+            "OpenBabel donor-H rebuild requested but `openbabel` could not be imported. "
+            "Install/fix OpenBabel, or rely on explicit H coordinates in the input PDB."
+        ) from e
     conv = ob.OBConversion()
     if not conv.SetInFormat("pdb"):
         raise RuntimeError("OpenBabel: failed to set PDB input format")
@@ -444,7 +453,15 @@ def main() -> None:
     ligand = _load_pdb_mol(args.ligand_pdb)
     lig_names, lig_xyz, lig_vdw = _ligand_heavy_atoms(ligand)
     lig_centroid = lig_xyz.mean(axis=0)
-    lig_donor_h_xyz_by_name = _ligand_donor_h_xyz_by_atom_name_openbabel(args.ligand_pdb)
+    try:
+        lig_donor_h_xyz_by_name = _ligand_donor_h_xyz_by_atom_name_openbabel(args.ligand_pdb)
+        lig_donor_h_source = "openbabel"
+    except ImportError:
+        # OpenBabel can be unavailable or broken in some environments. In that case, we do *not* trust
+        # explicit ligand H coordinates from the input PDB (they can be missing or arbitrary), so we
+        # intentionally fall back to distance-only ligand-donor satisfaction checks.
+        lig_donor_h_xyz_by_name = {}
+        lig_donor_h_source = "none"
 
     # Residue atoms used for clash filtering, in rifdock BackboneActor local coords (Angstrom)
     # See external/rifdock/schemelib/scheme/actor/BackboneActor.hh get_n_ca_c/get_cb.
@@ -996,6 +1013,7 @@ def main() -> None:
             "clash_tol": float(args.clash_tol),
         },
         "ligand": {"n_heavy_atoms": int(lig_xyz.shape[0]), "heavy_atom_names": lig_names},
+        "ligand_donor_h_source": str(lig_donor_h_source),
         "polar_atoms": polar_atoms,
         "atom_order": atom_order,
         "n_sites": len(sites),

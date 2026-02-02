@@ -279,9 +279,9 @@ def main() -> None:
         )
 
         # Symmetry handling (minimal MVP):
-        # Some cg types have symmetric atoms (e.g., coo: OD1/OD2 and OE1/OE2).
-        # In proteins these labels are well-defined, but in ligands O1/O2 style names are arbitrary.
-        # To avoid mirroring artifacts and missed/misplaced interactions, emit a swapped frame too.
+        # Some cg types have symmetric atoms (e.g., coo: OD1/OD2 and OE1/OE2; aromatic rings: CD1/CD2).
+        # In proteins these labels are well-defined, but in ligands O1/O2 / C1/C2 style names are arbitrary.
+        # To avoid mirroring artifacts and missed/misplaced interactions, emit swapped frames too.
         if cg == "coo":
             alt_c2 = None
             if c2n == "OD1" and "OD2" in corr_names:
@@ -312,6 +312,36 @@ def main() -> None:
                             correspond_resname=str(entry["correspond_resname"]),
                             correspond_names=tuple(corr_names),
                             frame_atom_names=(a0n, a1n, alt_a2n),
+                            R=R2,
+                            t=t2,
+                            covers_polar_atoms=tuple(covers),
+                        )
+                    )
+        elif cg in {"ph", "phenol"}:
+            # The default iFG frame uses (CG, CD1, CD2). CD1/CD2 are symmetric and can be arbitrarily labeled in ligands.
+            # Emit an alternate frame with CD1<->CD2 swapped.
+            if "CD1" in corr_names and "CD2" in corr_names:
+                j1 = corr_names.index("CD1")
+                j2 = corr_names.index("CD2")
+                alt_a1n = lgd_sel[j2]
+                alt_a2n = lgd_sel[j1]
+                if (alt_a1n, alt_a2n) != (a1n, a2n):
+                    for nm in (a0n, alt_a1n, alt_a2n):
+                        if nm not in name_to_idx:
+                            raise KeyError(f"Ligand atom name not found in PDB (symmetry swap): {nm}")
+                    R2, t2 = _frame_from_points(
+                        _xyz(mol, name_to_idx[a0n]),
+                        _xyz(mol, name_to_idx[alt_a1n]),
+                        _xyz(mol, name_to_idx[alt_a2n]),
+                    )
+                    sites.append(
+                        SiteFrame(
+                            site_id=f"cgmap:{key}:swap_CD1_CD2",
+                            cg=cg,
+                            lgd_sel=tuple(lgd_sel),
+                            correspond_resname=str(entry["correspond_resname"]),
+                            correspond_names=tuple(corr_names),
+                            frame_atom_names=(a0n, alt_a1n, alt_a2n),
                             R=R2,
                             t=t2,
                             covers_polar_atoms=tuple(covers),

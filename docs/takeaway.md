@@ -121,14 +121,16 @@ Two concrete MVP fixes that made the MTX debug run actually pass validation:
 - In `scripts/04_candidates/01_generate_candidates.py`, compute `cover_mask_u16` from coarse **distance-based satisfaction** using the placed residue’s full-atom coordinates (not from site-frame membership).
 - When atoms are missing in `center_atom_xyz_stub_f32` they are stored as `NaN`; distance code must treat those as “not present”. Using `np.nansum` (or `nanmin` without guarding all-NaN) can create false positives.
 
-## 9) Symmetric ligand CGs need “swap frames” (OD1/OD2, OE1/OE2)
+## 9) Symmetric ligand CGs need “swap frames” (OD1/OD2, OE1/OE2, CD1/CD2)
 
 Combs vdM iFG frames are defined with *labeled* atoms (e.g., carboxylate uses `.../OD1` in `configs/cg_frame_defs.json`). For amino acids this labeling is consistent, but ligand PDB naming like `O1/O2` is arbitrary.
 
 If we align ligand site frames using only one oxygen (e.g., `OD1→O1`), we can accidentally mirror the iFG frame and misplace vdMs.
 
 MVP fix:
-- In `scripts/02_polar_sites/03_build_ligand_site_frames.py`, for `cg=="coo"` we emit an extra `cgmap:<key>:swap_*` site frame that swaps `OD1↔OD2` (and `OE1↔OE2`) when those labels exist in the `correspond_names`.
+- In `scripts/02_polar_sites/03_build_ligand_site_frames.py`, emit extra swapped frames for:
+  - `cg=="coo"`: swap `OD1↔OD2` / `OE1↔OE2` (when present in `correspond_names`)
+  - `cg in {"ph","phenol"}`: swap `CD1↔CD2`
 
 ## 10) “All residues look like C-C(-N)-C” is usually backbone-only output
 
