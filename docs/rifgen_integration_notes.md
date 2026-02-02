@@ -98,7 +98,7 @@ Minimal patch shape:
   4) `rif_accum->condense()` and write `.rif.gz`
 
 Notes:
-- Insertion is **hard-gated** by `score <= 0` (see `RIFAccumulatorMapThreaded::insert`: `if( score > 0.0 ) return;`), so exported scores must be non-positive (Python export defaults to negating).
+- Insertion is **hard-gated** by `score <= 0` (see `RIFAccumulatorMapThreaded::insert`: `if( score > 0.0 ) return;`), so exported scores must be non-positive (Python export defaults to an order-preserving shift to `<=0`).
 - `irot_id` is stored as an integer field; rifdock does not interpret it during writing. Interpretation happens later when *using* the RIF (rotamer library / atom coords). For vdM motifs we plan to keep `irot_lib` as the authoritative sidecar until/unless we build a custom runtime that can realize these “vdM rotamers”.
 
 ### Tier 2 (future): native `RifGeneratorVdM`
