@@ -64,3 +64,71 @@ Therefore, the integration hinges on a bounded **irot library**:
 - store per irot: residue atoms in stub-local coords + vdM prior score(s) + “which ligand polar atom(s) can be satisfied” as sat indices
 
 See `docs/irot_compression_plan.md` and `docs/vdxform_to_rif_spec.md`.
+
+## Concrete interface proposal (where code changes land)
+
+This repo’s current MVP keeps Python as the correctness oracle and treats rifdock as a **fast, native 6D hash + top‑K container**. That suggests two integration tiers:
+
+### Tier 0 (current MVP, no rifdock C++ changes)
+
+- Python exports an intermediate “RIF input” bundle:
+  - placement list: `(X_world_stub, irot_id, score, sat1/sat2)`
+  - irot library sidecar: `irot_id -> (aa3,cg,cluster_number, stub-local atoms)`
+- See `docs/vdxform_to_rif_spec.md` and `scripts/06_rif_export/01_export_rif_inputs.py`.
+
+This tier avoids reimplementing rifdock’s hasher and packed storage in Python, but it is **not** a `.rif.gz` yet.
+
+### Tier 1 (recommended next step): add a “placement importer” that writes a real `.rif.gz`
+
+Goal: convert the intermediate placement bundle into a rifdock `RifBase` by using rifdock’s own `XformHash` and per-voxel `RotamerScores` insertion.
+
+Where:
+- App entry: `external/rifdock/apps/rosetta/rifgen.cc`
+  - This already wires `RifFactory` + `RifAccumulator` and writes `.rif.gz`.
+  - It currently generates placements via built-in generators (hbonds/apohotspots).
+- Insert path: `external/rifdock/apps/rosetta/riflib/rif/RifAccumulators.hh`
+  - `RIFAccumulatorMapThreaded::insert(xform, score, rot, sat1, sat2, ...)`
+  - Uses `xmap_ptr_->hasher_.get_key(x)` and `value.add_rotamer(rot, score, sat1, sat2, ...)`.
+
+Minimal patch shape:
+- Add a new mode to `rifgen.cc` (or a new small app beside it) that:
+  1) loads `*_placements.npz` (xform12 + irot_id + score + sat1/sat2)
+  2) constructs `rif_accum = rif_factory->create_rif_accumulator(hash_cart_resl, hash_angle_resl, cart_bound, ...)`
+  3) loops placements and calls `rif_accum->insert(x, score, irot_id, sat1, sat2, force=false, single_thread=...)`
+  4) `rif_accum->condense()` and write `.rif.gz`
+
+Notes:
+- Insertion is **hard-gated** by `score <= 0` (see `RIFAccumulatorMapThreaded::insert`: `if( score > 0.0 ) return;`), so exported scores must be non-positive (Python export defaults to negating).
+- `irot_id` is stored as an integer field; rifdock does not interpret it during writing. Interpretation happens later when *using* the RIF (rotamer library / atom coords). For vdM motifs we plan to keep `irot_lib` as the authoritative sidecar until/unless we build a custom runtime that can realize these “vdM rotamers”.
+
+### Tier 2 (future): native `RifGeneratorVdM`
+
+If we want to skip Python enumeration and generate directly inside rifdock, a new generator would implement:
+- `external/rifdock/apps/rosetta/riflib/rif/RifGenerator.hh` (`RifGenerator::generate_rif(...)`)
+
+It would need:
+- a vdM/irot library reader (not parquet; precompiled binary/NPZ->custom C++ format)
+- a satisfaction model consistent with current Python oracle
+- deterministic chunking/resume and stable tie-breaks
+
+## Where discretization and rotamer-library selection live
+
+### Discretization knobs
+
+- Options and grid ladder live in: `external/rifdock/apps/rosetta/rifgen.cc`
+  - `-rifgen:hash_cart_resls`, `-rifgen:hash_ang_resls`, `-rifgen:hash_cart_bounds`
+  - `rif_factory->create_rif_accumulator(hash_cart_resl, hash_angle_resl, cart_bound, ...)`
+
+### Rotamer library (`RotamerIndex`) construction
+
+For built-in generators, rifgen builds a `RotamerIndex` from a `RotamerIndexSpec`:
+- Spec type: `external/rifdock/schemelib/scheme/chemical/RotamerIndex.hh` (`RotamerIndexSpec`)
+- Defaults and cache loading: `external/rifdock/apps/rosetta/riflib/RotamerGenerator.hh` / `.cc`
+  - `get_rotamer_spec_default(rot_index_spec, extra_rotamers, ...)`
+  - `get_rotamer_index(rot_index_spec, build_per_thread_rotamers)`
+  - or `get_rotamer_index(cachefile, build_per_thread_rotamers, rot_index_spec)` to load a cached spec
+
+Some generators can further tweak the spec:
+- Example: `external/rifdock/apps/rosetta/riflib/rif/RifGeneratorUserHotspots.cc` (`modify_rotamer_spec(...)`)
+
+For Tier 1 (placement importer), we can bypass `RotamerIndex` entirely because we are not *scoring* placements, only storing them into the RIF container.

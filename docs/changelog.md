@@ -5,6 +5,9 @@
 - Extended symmetric ligand site-frame handling beyond `coo` to aromatic `ph`/`phenol` (`CD1/CD2` swap frames) in `scripts/02_polar_sites/03_build_ligand_site_frames.py`.
 - Added a focused regression harness for symmetry swap frames: `scripts/99_harness/02_run_symmetry_site_frames_regression.sh`.
 - Documented quantitative per-voxel storage impact for `Rot12ScoreSat96` vs `Rot10Score6Sat16` in `docs/irot_compression_plan.md`.
+- Expanded rifdock integration pointers and a concrete “Tier 1 placement importer” proposal in `docs/rifgen_integration_notes.md`.
+- Added MTX rif-export smoke harness: `scripts/99_harness/04_run_mtx_rif_export_smoke.sh`.
+- Made `scripts/06_rif_export/01_export_rif_inputs.py` default score mapping rifdock-insert-safe (order-preserving shift to `<=0`).
 
 ## 2026-01-13
 

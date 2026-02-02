@@ -46,7 +46,7 @@ Outputs (given `--out-prefix processed/06_rif_export/<tag>/MTX`):
 - `processed/06_rif_export/<tag>/MTX_placements.npz`
   - `xform_world_stub_12_f32` (N,12) packed (R|t)
   - `irot_id_u16` (N,) ligand-specific rotamer id
-  - `score_f32` (N,) by default negated so `score<=0` (rifdock ignores `score>0`)
+  - `score_f32` (N,) by default shifted so `score<=0` while preserving ordering (rifdock ignores `score>0`)
   - `sat1_i16`, `sat2_i16` (N,) indices into `polar_atoms` (or -1)
 - `processed/06_rif_export/<tag>/MTX_irot_lib.npz`
   - `irot_id_u16` (M,)

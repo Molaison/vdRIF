@@ -62,7 +62,11 @@ def main() -> None:
         type=str,
         default="negate",
         choices=["negate", "keep"],
-        help="rifdock RIF insert ignores score>0; by default we negate our score so exported scores are <=0.",
+        help=(
+            "How to map candidate scores to rifdock-compatible scores. rifdock insertion ignores score>0. "
+            "'negate' performs an order-preserving shift: score_out = score - max(score) (so best is 0 and all <=0). "
+            "'keep' writes scores unchanged (may drop entries if any score>0 during insertion)."
+        ),
     )
     args = ap.parse_args()
 
@@ -124,7 +128,14 @@ def main() -> None:
 
     score_out = score.copy()
     if args.score_sign == "negate":
-        score_out = -score_out
+        # rifdock insertion skips score>0. To keep all candidates while preserving their
+        # relative ordering ("higher is better" in our pipeline), shift so the best is 0:
+        #   score_out = score - max(score)
+        # This guarantees score_out <= 0 while remaining monotonic in the original score.
+        mx = float(np.nanmax(score_out))
+        if not np.isfinite(mx):
+            mx = 0.0
+        score_out = score_out - np.float32(mx)
 
     out_prefix = args.out_prefix
     out_prefix.parent.mkdir(parents=True, exist_ok=True)
@@ -180,4 +191,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
