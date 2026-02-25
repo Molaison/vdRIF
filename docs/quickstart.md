@@ -140,6 +140,21 @@ uv run -p 3.11 python scripts/99_harness/01_mtx_determinism_regression.py \
   --tag full_vdx_smoke
 ```
 
+### 6b) Pocket-quality sweep (full vdXform + optional PLIP gate)
+
+This runs a small parameter sweep over candidate scoring (`score_w_*`) and solver pocket-size controls
+(`target_res`, `min_cover_per_polar`), then writes:
+- `processed/99_harness/mtx_pocket_quality_sweep_<tag>/summary.json`
+- `processed/99_harness/mtx_pocket_quality_sweep_<tag>/summary.md`
+
+By default, `--run-plip` is an optional audit signal in this sweep: PLIP failures are recorded as `plip_error`
+and `plip_*` metrics may be `null`, but core feasibility still follows sat + ligand clash + internal clash.
+Add `--require-plip-success` to make PLIP success a hard feasibility gate.
+
+```bash
+MAX_RUNS=4 bash scripts/99_harness/05_run_mtx_pocket_quality_sweep.sh
+```
+
 ### 7) Interaction validation (PLIP) — do not skip
 
 Run PLIP on the generated motif PDB and check that every polar atom is contacted by at least one PLIP interaction:
