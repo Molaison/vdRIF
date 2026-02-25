@@ -186,7 +186,9 @@ python scripts/99_harness/05_benchmark_pocket_contact_grid.py \
 
 The harness will keep and report pre/post PLIP metrics (`n_satisfied_plip_pre_fill` vs `n_satisfied_plip`) and use post-fill outputs for final scoring only when they do not regress.
 
-See `docs/pocket_contact_sweep_20260225.md` for one concrete run and interpretation.
+See:
+- `docs/pocket_contact_sweep_20260225.md` (pre-fix baseline, PLIP `0/6`)
+- `docs/pocket_contact_plip_fill_full6_20260225.md` (post-fix rerun, PLIP `6/6`)
 
 ## Environment notes (important)
 

@@ -22,6 +22,7 @@
   - added `--top-per-site-list` (CSV) to sweep search budgets in one run;
   - markdown/json summaries now include `top_per_site` per run.
 - New budget smoke (`pocket_contact_grid_top_budget_smoke_20260225`) shows PLIP full satisfaction (`9/9`) with PLIP-fill while preserving zero ligand/internal clashes.
+- Full 6-point rerun (`pocket_contact_grid_plipfill_full6_20260225`) now yields `PLIP all-satisfied = 6/6` (previous baseline was `0/6`), with clashes still clean.
 
 ## 2026-02-02
 
