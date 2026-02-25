@@ -1068,17 +1068,31 @@ def main() -> None:
 
     keep_idx = sorted(best.values(), key=lambda i: (-(float(score[i])), int(cand_id[i])))
 
-    cand_id_arr = np.array([cand_id[i] for i in keep_idx], dtype=np.uint64)
-    site_idx_arr = np.array([site_index[i] for i in keep_idx], dtype=np.uint16)
-    vdm_id_arr = np.array([vdm_id[i] for i in keep_idx], dtype=np.uint64)
-    aa3_arr = np.array([aa3[i] for i in keep_idx], dtype="U3")
-    score_arr = np.array([score[i] for i in keep_idx], dtype=np.float32)
-    cover_arr = np.array([cover_mask[i] for i in keep_idx], dtype=np.uint16)
-    pocket_contact_count_arr = np.array([pocket_contact_count[i] for i in keep_idx], dtype=np.uint8)
-    pocket_contact_score_arr = np.array([pocket_contact_score[i] for i in keep_idx], dtype=np.float32)
-    cluster_number_arr = np.array([cluster_number[i] for i in keep_idx], dtype=np.int32)
-    xw12_arr = np.stack([xform_world_stub_12[i] for i in keep_idx], axis=0).astype(np.float32)
-    center_stub_arr = np.stack([center_atom_xyz_stub[i] for i in keep_idx], axis=0).astype(np.float32)
+    if keep_idx:
+        cand_id_arr = np.array([cand_id[i] for i in keep_idx], dtype=np.uint64)
+        site_idx_arr = np.array([site_index[i] for i in keep_idx], dtype=np.uint16)
+        vdm_id_arr = np.array([vdm_id[i] for i in keep_idx], dtype=np.uint64)
+        aa3_arr = np.array([aa3[i] for i in keep_idx], dtype="U3")
+        score_arr = np.array([score[i] for i in keep_idx], dtype=np.float32)
+        cover_arr = np.array([cover_mask[i] for i in keep_idx], dtype=np.uint16)
+        pocket_contact_count_arr = np.array([pocket_contact_count[i] for i in keep_idx], dtype=np.uint8)
+        pocket_contact_score_arr = np.array([pocket_contact_score[i] for i in keep_idx], dtype=np.float32)
+        cluster_number_arr = np.array([cluster_number[i] for i in keep_idx], dtype=np.int32)
+        xw12_arr = np.stack([xform_world_stub_12[i] for i in keep_idx], axis=0).astype(np.float32)
+        center_stub_arr = np.stack([center_atom_xyz_stub[i] for i in keep_idx], axis=0).astype(np.float32)
+    else:
+        n_atoms = int(len(atom_order)) if atom_order is not None else 0
+        cand_id_arr = np.zeros((0,), dtype=np.uint64)
+        site_idx_arr = np.zeros((0,), dtype=np.uint16)
+        vdm_id_arr = np.zeros((0,), dtype=np.uint64)
+        aa3_arr = np.zeros((0,), dtype="U3")
+        score_arr = np.zeros((0,), dtype=np.float32)
+        cover_arr = np.zeros((0,), dtype=np.uint16)
+        pocket_contact_count_arr = np.zeros((0,), dtype=np.uint8)
+        pocket_contact_score_arr = np.zeros((0,), dtype=np.float32)
+        cluster_number_arr = np.zeros((0,), dtype=np.int32)
+        xw12_arr = np.zeros((0, 12), dtype=np.float32)
+        center_stub_arr = np.zeros((0, n_atoms, 3), dtype=np.float32)
 
     out_npz = args.out_prefix.with_suffix(".npz")
     out_json = args.out_prefix.with_suffix(".json")
@@ -1120,6 +1134,7 @@ def main() -> None:
         "atom_order": atom_order,
         "n_sites": len(sites),
         "n_candidates": int(cand_id_arr.shape[0]),
+        "empty_candidates": bool(cand_id_arr.shape[0] == 0),
         "missing_cg": sorted(missing_cg),
         "frame_coverage_union_bitmask": int(coverage_union),
         "satisfaction_union_bitmask": int(satisfied_union),
