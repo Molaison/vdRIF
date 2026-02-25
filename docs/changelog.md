@@ -17,6 +17,9 @@
 - Added synthetic smoke harness to verify balanced objective behavior:
   - `scripts/99_harness/05_solver_balanced_objective_smoke.py`
   - `scripts/99_harness/05_run_solver_balanced_objective_smoke.sh`
+- Fixed `uv sync` bootstrap in clean worktrees by restoring tracked workspace member:
+  - added `vendor/openbabel_meta/pyproject.toml` (meta package for `openbabel-wheel==3.1.1.22`)
+  - adjusted `.gitignore` to allow this specific path while still ignoring other `vendor/` contents.
 
 ## 2026-02-02
 

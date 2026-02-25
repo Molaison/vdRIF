@@ -16,5 +16,10 @@ logs/**/*
 # bv (beads viewer) local config and caches
 .bv/
 
-# Local vendored build metadata (not source)
-vendor/
+# Local vendored build metadata (not source), except tracked OpenBabel meta-package.
+vendor/*
+!vendor/openbabel_meta/
+vendor/openbabel_meta/*
+!vendor/openbabel_meta/pyproject.toml
+!vendor/openbabel_meta/README.md
+vendor/openbabel_meta/*.egg-info/
