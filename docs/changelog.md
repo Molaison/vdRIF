@@ -1,7 +1,27 @@
 # Changelog
 
+## 2026-02-26
+
+- Aligned conservative N+ cation typing across backends in `scripts/02_polar_sites/01_extract_polar_sites.py`:
+  - OpenBabel path now uses heavy-atom degree (`GetHvyDegree`) with compatibility fallbacks.
+  - Removes RDKit/OpenBabel rule mismatch that previously left guanidinium-like N1 typed as cation in OpenBabel path.
+- Hardened dropped-cation detection in `scripts/99_harness/07_non_mtx_cation_typing_validation.py`:
+  - Legacy-vs-new comparison now patches cation roles from formal-charge-positive atoms and records dropped atoms from actual role deltas.
+  - Avoids false positives caused by precomputed metadata not matching extraction backend behavior.
+- Re-ran non-MTX cation validation:
+  - Artifact: `processed/99_harness/non_mtx_cation_typing_20260226-014322/report.json`.
+  - Result: `n_tested=5`, `n_solved=5`, `n_plip_compared=5`, with a real dropped-cation case (`GUA N1`) now solvable and PLIP-comparable.
+
 ## 2026-02-25
 
+- Added non-MTX ionic regression harness for the cation-typing cutover:
+  - `scripts/99_harness/07_non_mtx_cation_typing_validation.py`
+  - `scripts/99_harness/07_run_non_mtx_cation_typing_validation.sh`
+  - It builds ionic test ligands from SMILES, runs cgmap/polar extraction/site-frame/candidate/solver, compares old vs new cation typing, and reports PLIP satisfaction deltas.
+  - First run artifact: `processed/99_harness/non_mtx_cation_typing_20260226-cation-validate-v2/report.json`.
+- Made PLIP validation output-file detection version-robust in `scripts/05_solver/06_validate_motif_plip.py`:
+  - Prefer `plipfixed.*.pdb`, fallback to `*_protonated.pdb` / `*protonated*.pdb`.
+  - Fixes false failures on PLIP versions that do not emit `plipfixed.*.pdb`.
 - Fixed PLIP-target definition mismatch for ionic sites in `scripts/02_polar_sites/01_extract_polar_sites.py`:
   - Formal-charge `cation` typing is now conservative for nitrogen (`degree >= 3` required).
   - This removes over-constrained pseudo-targets like MTX `N5` (charged but not a stable per-atom salt-bridge center in PLIP), while preserving `NA2` as the cation target.

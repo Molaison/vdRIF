@@ -173,11 +173,24 @@ def _iter_sites_openbabel(mol: ob.OBMol, include_h: bool) -> Iterable[AtomSite]:
             return False
         if int(atom.GetAtomicNum()) != 7:
             return True
-        get_deg = getattr(atom, "GetTotalDegree", None)
-        if callable(get_deg):
-            return int(get_deg()) >= 3
-        # Fallback for older bindings.
-        return int(atom.GetValence()) >= 3
+
+        # Keep OpenBabel behavior aligned with RDKit path: degree means heavy-atom degree.
+        get_hvy_deg = getattr(atom, "GetHvyDegree", None)
+        if callable(get_hvy_deg):
+            return int(get_hvy_deg()) >= 3
+
+        # Fallback for older bindings lacking GetHvyDegree.
+        try:
+            hvy_deg = sum(1 for nb in ob.OBAtomAtomIter(atom) if int(nb.GetAtomicNum()) != 1)
+            return int(hvy_deg) >= 3
+        except Exception:
+            get_exp_deg = getattr(atom, "GetExplicitDegree", None)
+            if callable(get_exp_deg):
+                return int(get_exp_deg()) >= 3
+            get_total_deg = getattr(atom, "GetTotalDegree", None)
+            if callable(get_total_deg):
+                return int(get_total_deg()) >= 3
+            return False
 
     for atom in ob.OBMolAtomIter(mol):
         atomic_num = int(atom.GetAtomicNum())

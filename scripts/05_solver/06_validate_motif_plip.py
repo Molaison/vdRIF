@@ -80,6 +80,17 @@ def _find_latest(glob_parent: Path, pattern: str) -> Path:
     return matches[-1]
 
 
+def _find_plip_ligand_pdb(outdir: Path) -> Path:
+    # PLIP naming varies by version. Prefer plipfixed when present, else protonated output.
+    patterns = ("plipfixed.*.pdb", "*_protonated.pdb", "*protonated*.pdb")
+    for pat in patterns:
+        matches = sorted(outdir.glob(pat), key=lambda p: p.stat().st_mtime)
+        if matches:
+            return matches[-1]
+    pats = ", ".join(patterns)
+    raise FileNotFoundError(f"Expected at least 1 PLIP output PDB ({pats}) in {outdir}, got 0")
+
+
 def _parse_int_list(s: str) -> list[int]:
     # Examples seen in PLIP XML: "27,28" or "27, 28"
     s = s.strip()
@@ -208,7 +219,7 @@ def main() -> None:
         # Some PLIP versions rename output based on input basename, keep a robust glob fallback.
         report_xml = _find_latest(outdir, "*_report.xml")
 
-    plipfixed = _find_latest(outdir, "plipfixed.*.pdb")
+    plipfixed = _find_plip_ligand_pdb(outdir)
 
     ligand_serial_to_name = _collect_ligand_atom_serials_from_plip(plipfixed, ligand_key)
     interacting_serials = _collect_interacting_ligand_serials(report_xml, set(ligand_serial_to_name.keys()))
