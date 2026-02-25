@@ -22,6 +22,12 @@
   - `scripts/99_harness/06_run_mtx_balanced_solver_sweep.sh`
   - uses deterministic evenly-spaced subsampling when `--max-runs` is smaller than full Cartesian combos.
   - only recommends feasible runs and pre-skips impossible `min_unique_sites` combinations.
+- Tuned MTX solver wrapper defaults from real candidate sweep (`processed/99_harness/mtx_balanced_solver_sweep_1772030714/report.json`):
+  - `TARGET_RES=12`
+  - `TARGET_RES_PENALTY=1200`
+  - `SITE_DIVERSITY_REWARD=2000`
+  - `MIN_UNIQUE_SITES=6`
+  - `MAX_PER_SITE=2`
 - Fixed `uv sync` bootstrap in clean worktrees by restoring tracked workspace member:
   - added `vendor/openbabel_meta/pyproject.toml` (meta package for `openbabel-wheel==3.1.1.22`)
   - adjusted `.gitignore` to allow this specific path while still ignoring other `vendor/` contents.
