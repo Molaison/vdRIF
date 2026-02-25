@@ -160,6 +160,23 @@ uv run -p 3.11 python scripts/05_solver/05_validate_motif_internal_clashes.py \
   --motif-pdb outputs/05_solver/MTX_motif.pdb -o outputs/05_solver/MTX_motif_internal_clash.json --ligand-resname MTX
 ```
 
+### 8) Run MTX pocket sweep on dg and compare runtime
+
+Run the remote sweep (default 6-point grid: `angle=60`, `weight=0.05/0.10/0.15`, `min_sc=1/2`):
+
+```bash
+bash scripts/07_dg/02_run_mtx_pocket_knob_sweep_on_dg.sh
+```
+
+Then compare with local baseline summary:
+
+```bash
+python scripts/99_harness/06_compare_pocket_runtime.py \
+  --local-summary processed/99_harness/mtx_pocket_contact_grid_pocket_contact_grid_20260225_v2/summary.json \
+  --dg-summary processed/99_harness/mtx_pocket_knob_sweep_<tag>/summary.json \
+  --out-md docs/mtx_pocket_runtime_compare_<date>.md
+```
+
 ## Environment notes (important)
 
 - This workspace’s system `python3` is 3.6.8, and the system RDKit is broken (missing FreeINCHI symbols).

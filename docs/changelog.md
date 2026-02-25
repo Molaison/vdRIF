@@ -28,6 +28,13 @@
   - `--min-lig-donor-angle-deg 75` (or `60`; both passed in local sweep)
   - `--pocket-contact-weight 0.2`
   - `--min-pocket-sidechain-contacts 1`
+- Added dg automation + runtime comparison tooling:
+  - `scripts/07_dg/02_run_mtx_pocket_knob_sweep_on_dg.sh` to sync code/data, build a dg user env, run MTX pocket sweep remotely, and pull summary back.
+  - `scripts/99_harness/06_compare_pocket_runtime.py` to compare local/dg sweep summaries on shared `(min_sc_contacts, weight)` keys.
+- Executed dg 6-point sweep (aligned with historical grid dimensions):
+  - `processed/99_harness/mtx_pocket_knob_sweep_dg_grid6_20260225-223325/summary.json`
+  - comparison report: `docs/mtx_pocket_runtime_compare_20260225.md`
+  - aggregate runtime: local mean `131.31s` vs dg mean `86.06s` (`1.526x` local/dg speedup on matched runs).
 
 ## 2026-02-02
 
