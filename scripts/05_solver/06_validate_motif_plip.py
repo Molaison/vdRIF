@@ -167,6 +167,12 @@ def main() -> None:
     ap.add_argument("-o", "--out", type=Path, required=True)
     ap.add_argument("--maxthreads", type=int, default=1)
     ap.add_argument("--timeout-s", type=float, default=120.0)
+    ap.add_argument(
+        "--plip-bin",
+        type=str,
+        default="plip",
+        help="PLIP executable path/name (default: plip in PATH).",
+    )
     ap.add_argument("--keep-plip-outdir", action="store_true")
     ap.add_argument("--plip-outdir", type=Path, default=None, help="Optional explicit PLIP output dir (for debugging).")
     args = ap.parse_args()
@@ -184,7 +190,7 @@ def main() -> None:
     outdir.mkdir(parents=True, exist_ok=True)
 
     cmd = [
-        "plip",
+        str(args.plip_bin),
         "-f",
         str(args.motif_pdb),
         "-x",
@@ -214,7 +220,7 @@ def main() -> None:
 
     payload = {
         "all_satisfied": len(unsatisfied_polar) == 0,
-        "inputs": {"motif_pdb": str(args.motif_pdb), "polar_sites": str(args.polar_sites)},
+        "inputs": {"motif_pdb": str(args.motif_pdb), "polar_sites": str(args.polar_sites), "plip_bin": str(args.plip_bin)},
         "ligand": {"resname": ligand_key[0], "chain": ligand_key[1], "resnum": ligand_key[2]},
         "n_polar_atoms": len(polar_atom_names),
         "n_satisfied": len(satisfied_polar),

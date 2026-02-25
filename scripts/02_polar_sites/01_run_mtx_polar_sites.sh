@@ -18,14 +18,14 @@ mkdir -p "$(dirname "$OUT_SITES")" "$(dirname "$OUT_COV")" "$(dirname "$LOG")"
   echo "[run] out_frames: $OUT_FRAMES"
   uv sync -p 3.11 --extra rdkit
   BACKEND="${POLAR_SITES_BACKEND:-openbabel}"
+  POLAR_SITES_PYTHON="${POLAR_SITES_PYTHON:-python3}"
   echo "[run] polar_sites backend: $BACKEND"
-  if ! uv run -p 3.11 python "${ROOT}/scripts/02_polar_sites/01_extract_polar_sites.py" "$LIG" -o "$OUT_SITES" --backend "$BACKEND"; then
-    if [[ "$BACKEND" == "openbabel" ]]; then
-      echo "[warn] openbabel backend failed; retrying with --backend rdkit"
-      uv run -p 3.11 python "${ROOT}/scripts/02_polar_sites/01_extract_polar_sites.py" "$LIG" -o "$OUT_SITES" --backend rdkit
-    else
-      exit 1
-    fi
+  echo "[run] polar_sites python: $POLAR_SITES_PYTHON"
+  if [[ "$BACKEND" == "openbabel" ]]; then
+    # OpenBabel runtime is isolated from the uv project env to avoid symbol mismatch.
+    "$POLAR_SITES_PYTHON" "${ROOT}/scripts/02_polar_sites/01_extract_polar_sites.py" "$LIG" -o "$OUT_SITES" --backend "$BACKEND"
+  else
+    uv run -p 3.11 python "${ROOT}/scripts/02_polar_sites/01_extract_polar_sites.py" "$LIG" -o "$OUT_SITES" --backend "$BACKEND"
   fi
   uv run -p 3.11 python "${ROOT}/scripts/02_polar_sites/02_check_polar_coverage_vs_cgmap.py" \
     --polar-sites "$OUT_SITES" \

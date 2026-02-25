@@ -8,10 +8,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Iterable
 
 import numpy as np
-from rdkit import Chem
-from rdkit import RDConfig
-from rdkit.Chem import ChemicalFeatures
-from rdkit.Chem import rdDetermineBonds
 
 if TYPE_CHECKING:  # pragma: no cover
     from openbabel import openbabel as ob  # type: ignore[import-not-found]
@@ -39,12 +35,18 @@ class AtomSite:
         }
 
 
-def _feature_factory() -> ChemicalFeatures.FreeChemicalFeatureFactory:
+def _feature_factory() -> Any:
+    from rdkit import RDConfig
+    from rdkit.Chem import ChemicalFeatures
+
     fdef = Path(RDConfig.RDDataDir) / "BaseFeatures.fdef"
     return ChemicalFeatures.BuildFeatureFactory(str(fdef))
 
 
-def _load_pdb_ligand(pdb_path: Path) -> Chem.Mol:
+def _load_pdb_ligand(pdb_path: Path) -> Any:
+    from rdkit import Chem
+    from rdkit.Chem import rdDetermineBonds
+
     # PDB has no bond orders; relying on default RDKit perception can create spurious implicit Hs,
     # which breaks donor/acceptor typing. Instead:
     # 1) read without sanitization
@@ -60,20 +62,20 @@ def _load_pdb_ligand(pdb_path: Path) -> Chem.Mol:
     return mol
 
 
-def _atom_name(atom: Chem.Atom) -> str:
+def _atom_name(atom: Any) -> str:
     info = atom.GetPDBResidueInfo()
     if info is None:
         return f"ATOM{atom.GetIdx()}"
     return info.GetName().strip()
 
 
-def _coords(mol: Chem.Mol, atom_idx: int) -> np.ndarray:
+def _coords(mol: Any, atom_idx: int) -> np.ndarray:
     conf = mol.GetConformer()
     p = conf.GetAtomPosition(atom_idx)
     return np.array([p.x, p.y, p.z], dtype=np.float64)
 
 
-def _collect_feature_roles(mol: Chem.Mol) -> dict[int, set[str]]:
+def _collect_feature_roles(mol: Any) -> dict[int, set[str]]:
     ff = _feature_factory()
     roles_by_atom: dict[int, set[str]] = {}
 
@@ -100,7 +102,7 @@ def _collect_feature_roles(mol: Chem.Mol) -> dict[int, set[str]]:
     return roles_by_atom
 
 
-def _iter_sites(mol: Chem.Mol, include_h: bool) -> Iterable[AtomSite]:
+def _iter_sites(mol: Any, include_h: bool) -> Iterable[AtomSite]:
     roles_by_atom = _collect_feature_roles(mol)
     for atom in mol.GetAtoms():
         if not include_h and atom.GetSymbol() == "H":
