@@ -266,7 +266,28 @@ What to do:
 - Use the full libraries under `processed/03_vdxform_full/` when evaluating feasibility.
 - Increase `--top-per-site` and consider `--top-per-site-per-atom` to avoid rare bits getting pruned by a shared heap.
 
-### D) vdM semantics confusion: which residue should become the “motif residue”?
+### D) Pocket looks “covered” but remains physically hollow
+
+Symptom:
+- Coverage and simple polar satisfaction can pass, but the selected motif still forms a weak or unrealistic ligand pocket.
+
+Root cause we hit:
+- Candidate scoring had no strong preference for sidechain-heavy ligand contacts, so solver could pick geometrically valid but pocket-thin residue sets.
+
+What to do:
+- Sweep pocket knobs on full vdXform assets:
+
+```bash
+TAG=local_full4_$(date +%Y%m%d-%H%M%S) \
+ANGLE_LIST=60,75 WEIGHT_LIST=0.0,0.2 MIN_SC_LIST=0,1 MAX_RUNS=4 \
+bash scripts/99_harness/05_run_mtx_pocket_knob_sweep.sh
+```
+
+- Read `processed/99_harness/mtx_pocket_knob_sweep_<tag>/summary.json` and pick the highest feasible run.
+- Local MTX result: `--pocket-contact-weight 0.2` is the deciding knob (weight `0.0` repeatedly produced severe internal overlap, while `0.2` produced feasible, clash-clean motifs).
+- `--min-pocket-sidechain-contacts` (`0` vs `1`) is secondary once contact weighting is enabled.
+
+### E) vdM semantics confusion: which residue should become the “motif residue”?
 
 This was a major source of incorrect motifs early on.
 
@@ -277,13 +298,13 @@ Ground truth in Combs2024 parquet (verify in `external/Combs2024/combs2/design/f
 
 If you export/place the iFG residue itself, you can accidentally overlay ligand-matched atoms and generate nonsense.
 
-### E) Scaling mismatch vs rifgen
+### F) Scaling mismatch vs rifgen
 
 rifgen assumes a relatively small, fixed rotamer set per amino acid, while vdM libraries can be millions:
 - Any approach that “just loops over vdMs” will bottleneck on I/O and on full-atom clash checks.
 - The MVP therefore uses (1) per-site top-K truncation, (2) vectorized prefilters, and (3) a deterministic solver.
 
-### F) Beads gotcha: repo mismatch
+### G) Beads gotcha: repo mismatch
 
 If `bd ready` warns `DATABASE MISMATCH DETECTED`, run:
 

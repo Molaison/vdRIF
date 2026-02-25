@@ -13,6 +13,21 @@
 - Updated MTX candidate runner scripts (`scripts/04_candidates/01_run_mtx_candidates_debug.sh`, `scripts/04_candidates/02_run_mtx_candidates.sh`) to use strict PLIP + pocket-contact settings by default.
   - Current MTX default run profile explicitly sets `--allow-backbone-hbonds` and `--min-lig-donor-angle-deg 60` to avoid false-negative coverage collapse on ligand donor `N` with the present local vdM library.
 - Aligned polar validation defaults with strict typing (`scripts/05_solver/03_validate_motif_polar_satisfaction.py`, solver run wrappers) by using `--acceptor-model plip`.
+- Added MTX pocket-knob sweep harness:
+  - `scripts/99_harness/05_mtx_pocket_knob_sweep.py`
+  - `scripts/99_harness/05_run_mtx_pocket_knob_sweep.sh`
+  - Wrapper resolves data and Python from git common root, so worktree runs can consume shared full vdXform assets without `uv sync`.
+- Ran full-library local sweeps and recorded reproducible evidence:
+  - `processed/99_harness/mtx_pocket_knob_sweep_local_full4_20260225-211454/summary.json`
+  - `processed/99_harness/mtx_pocket_knob_sweep_local_ang75_20260225-212315/summary.json`
+  - In both sweeps, `--pocket-contact-weight 0.0` produced severe motif-internal overlaps (`worst_internal_overlap=1.709`), while `0.2` produced feasible motifs with full polar satisfaction and clash-clean outputs.
+  - `--min-pocket-sidechain-contacts` (`0` vs `1`) had minor impact once contact weighting was enabled; both were feasible.
+- Recommended default profile for MTX pocket realism:
+  - `--allow-backbone-hbonds`
+  - `--acceptor-model plip`
+  - `--min-lig-donor-angle-deg 75` (or `60`; both passed in local sweep)
+  - `--pocket-contact-weight 0.2`
+  - `--min-pocket-sidechain-contacts 1`
 
 ## 2026-02-02
 
