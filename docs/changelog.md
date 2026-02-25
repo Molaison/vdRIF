@@ -11,6 +11,10 @@
 - Documented the pocket-contact tuning path in `docs/quickstart.md`.
 - Added full-library pocket-contact benchmark harness: `scripts/99_harness/05_benchmark_pocket_contact_grid.py`.
 - Ran a 6-point sweep (`count={1,2}`, `weight={0.05,0.10,0.15}`) and documented results in `docs/pocket_contact_sweep_20260225.md` (PLIP all-satisfied remained `0/6`; unsatisfied atoms stable at `N/N5/O`).
+- Added PLIP-guided post-solver rescue integration:
+  - `scripts/05_solver/07_plip_fill_motif.py` now picks a global best-improvement move per round (no early stop on one unsatisfiable atom).
+  - `scripts/99_harness/05_benchmark_pocket_contact_grid.py` now supports `--enable-plip-fill` and reports pre/post PLIP metrics.
+- Smoke evidence (`pocket_contact_grid_plipfill_smoke_20260225`): PLIP satisfied count improved `6 -> 7` (`N` recovered), remaining unsatisfied atoms `N5/O`; clash checks remained clean.
 
 ## 2026-02-02
 

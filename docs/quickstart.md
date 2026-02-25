@@ -181,6 +181,16 @@ python scripts/99_harness/05_benchmark_pocket_contact_grid.py \
   --tag pocket_contact_grid_YYYYMMDD
 ```
 
+If baseline PLIP is incomplete and you want automatic post-solver rescue attempts, add:
+
+```bash
+  --enable-plip-fill \
+  --plip-fill-max-res 15 \
+  --plip-fill-top-try-per-atom 120
+```
+
+The harness will keep and report pre/post PLIP metrics (`n_satisfied_plip_pre_fill` vs `n_satisfied_plip`) and use post-fill outputs for final scoring only when they do not regress.
+
 See `docs/pocket_contact_sweep_20260225.md` for one concrete run and interpretation.
 
 ## Environment notes (important)

@@ -407,88 +407,131 @@ def main() -> None:
 
         while missing:
             if current_res_count >= int(args.max_res):
+                report["steps"].append({"status": "max_res_reached", "remaining_unsatisfied": list(sorted(missing))})
                 break
 
-            target = str(sorted(missing)[0])
-            bit = polar_to_bit.get(target)
-            if bit is None:
-                raise ValueError(f"Target polar atom {target} not found in candidates meta polar_atoms")
+            # Global best-improvement move for this round:
+            # evaluate all currently missing atoms, then pick the best candidate that reduces
+            # the missing set size (deterministic tie-break).
+            best_move: dict[str, Any] | None = None
+            missing_now = list(sorted(missing))
+            new_resnum = max_resnum_m + 1
 
-            # Candidate indices that claim to cover this target.
-            idxs = np.nonzero((cover & (np.uint16(1 << bit))) != 0)[0]
-            if idxs.size == 0:
-                report["steps"].append({"target": target, "status": "no_candidates"})
-                break
-
-            # Rank candidates deterministically with a geometry heuristic (higher is better),
-            # tie-break by score desc then vdm_id asc then cand index.
-            scored: list[tuple[float, float, int, int]] = []
-            lig_xyz = polar_xyz_by_name[target]
-            lig_roles = polar_by_name[target]
-            for i in idxs:
-                geom = _score_candidate_for_target(
-                    atom_order=atom_order,
-                    center_xyz_stub=center_stub[i],
-                    xform_world_stub_12=xw12[i],
-                    lig_atom_name=target,
-                    lig_xyz=lig_xyz,
-                    lig_roles=lig_roles,
-                    lig_donor_h_xyz_by_name=lig_donor_h_xyz,
-                )
-                scored.append((float(geom), float(score[i]), int(vdm_id[i]), int(i)))
-            scored.sort(key=lambda x: (-x[0], -x[1], x[2], x[3]))
-
-            chosen_idx: int | None = None
-            for geom, sc, v_id, i in scored[: int(args.top_try_per_atom)]:
-                new_resnum = max_resnum_m + 1
-                cand_atoms = _candidate_atoms_world(
-                    atom_order=atom_order,
-                    aa3=str(aa3[i]),
-                    chain="M",
-                    resnum=new_resnum,
-                    xform_world_stub_12=xw12[i],
-                    center_xyz_stub=center_stub[i],
-                )
-                # Quick clash checks vs ligand and existing motif protein.
-                if _clashes(cand_atoms, ligand_atoms, tolerance=float(args.clash_tol), heavy_only=True):
-                    continue
-                if _clashes(cand_atoms, protein_atoms, tolerance=float(args.clash_tol), heavy_only=True):
+            for target in missing_now:
+                bit = polar_to_bit.get(target)
+                if bit is None:
                     continue
 
-                # Write a temporary PDB and ask PLIP whether this improves coverage.
-                test_atoms = list(cur_atoms) + cand_atoms
-                # Renumber serials deterministically
-                test_atoms2: list[PdbAtom] = []
-                for srl, a in enumerate(test_atoms, start=1):
-                    test_atoms2.append(PdbAtom(**{**a.__dict__, "serial": srl}))
-                _write_text(tmp_pdb, "\n".join(_format_pdb_atom(a) for a in test_atoms2) + "\nEND\n")
+                # Candidate indices that claim to cover this target.
+                idxs = np.nonzero((cover & (np.uint16(1 << bit))) != 0)[0]
+                if idxs.size == 0:
+                    continue
 
-                test_val = plip_validate(tmp_pdb)
-                test_missing = list(test_val.get("unsatisfied_polar_atoms") or [])
-                if len(test_missing) < len(missing) and target not in test_missing:
-                    chosen_idx = int(i)
-                    # Accept
-                    cur_atoms = test_atoms2
-                    protein_atoms.extend(cand_atoms)
-                    max_resnum_m = new_resnum
-                    current_res_count += 1
-                    missing = test_missing
-                    report["steps"].append(
-                        {
+                # Rank candidates deterministically with a geometry heuristic (higher is better),
+                # tie-break by score desc then vdm_id asc then cand index.
+                scored: list[tuple[float, float, int, int]] = []
+                lig_xyz = polar_xyz_by_name[target]
+                lig_roles = polar_by_name[target]
+                for i in idxs:
+                    geom = _score_candidate_for_target(
+                        atom_order=atom_order,
+                        center_xyz_stub=center_stub[i],
+                        xform_world_stub_12=xw12[i],
+                        lig_atom_name=target,
+                        lig_xyz=lig_xyz,
+                        lig_roles=lig_roles,
+                        lig_donor_h_xyz_by_name=lig_donor_h_xyz,
+                    )
+                    scored.append((float(geom), float(score[i]), int(vdm_id[i]), int(i)))
+                scored.sort(key=lambda x: (-x[0], -x[1], x[2], x[3]))
+
+                for geom, sc, v_id, i in scored[: int(args.top_try_per_atom)]:
+                    cand_atoms = _candidate_atoms_world(
+                        atom_order=atom_order,
+                        aa3=str(aa3[i]),
+                        chain="M",
+                        resnum=new_resnum,
+                        xform_world_stub_12=xw12[i],
+                        center_xyz_stub=center_stub[i],
+                    )
+                    # Quick clash checks vs ligand and existing motif protein.
+                    if _clashes(cand_atoms, ligand_atoms, tolerance=float(args.clash_tol), heavy_only=True):
+                        continue
+                    if _clashes(cand_atoms, protein_atoms, tolerance=float(args.clash_tol), heavy_only=True):
+                        continue
+
+                    # Write a temporary PDB and ask PLIP whether this improves coverage.
+                    test_atoms = list(cur_atoms) + cand_atoms
+                    # Renumber serials deterministically
+                    test_atoms2: list[PdbAtom] = []
+                    for srl, a in enumerate(test_atoms, start=1):
+                        test_atoms2.append(PdbAtom(**{**a.__dict__, "serial": srl}))
+                    _write_text(tmp_pdb, "\n".join(_format_pdb_atom(a) for a in test_atoms2) + "\nEND\n")
+
+                    test_val = plip_validate(tmp_pdb)
+                    test_missing = list(test_val.get("unsatisfied_polar_atoms") or [])
+                    improvement = int(len(missing_now) - len(test_missing))
+                    if improvement <= 0:
+                        continue
+
+                    target_fixed = bool(target not in test_missing)
+                    # Higher is better for all tuple fields.
+                    # Last two fields use negatives so smaller vdm_id / cand_idx win deterministically.
+                    rank_key = (
+                        int(improvement),
+                        int(target_fixed),
+                        float(geom),
+                        float(sc),
+                        -int(v_id),
+                        -int(i),
+                    )
+                    if best_move is None or rank_key > best_move["rank_key"]:
+                        best_move = {
+                            "rank_key": rank_key,
                             "target": target,
-                            "chosen_candidate_index": chosen_idx,
+                            "cand_idx": int(i),
                             "aa3": str(aa3[i]),
                             "vdm_id_u64": int(v_id),
                             "score": float(sc),
                             "geom_score": float(geom),
-                            "remaining_unsatisfied": list(missing),
+                            "test_atoms": test_atoms2,
+                            "cand_atoms": cand_atoms,
+                            "test_missing": list(test_missing),
+                            "improvement": int(improvement),
                         }
-                    )
+                    # Full coverage recovered for current missing set; cannot do better this round.
+                    if improvement == len(missing_now):
+                        break
+                if best_move is not None and int(best_move["improvement"]) == len(missing_now):
                     break
 
-            if chosen_idx is None:
-                report["steps"].append({"target": target, "status": "no_improving_candidate", "remaining": list(missing)})
+            if best_move is None:
+                report["steps"].append(
+                    {
+                        "status": "no_global_improving_candidate",
+                        "remaining_unsatisfied": list(missing_now),
+                    }
+                )
                 break
+
+            # Accept best move for this round.
+            cur_atoms = list(best_move["test_atoms"])
+            protein_atoms.extend(best_move["cand_atoms"])
+            max_resnum_m = new_resnum
+            current_res_count += 1
+            missing = list(best_move["test_missing"])
+            report["steps"].append(
+                {
+                    "target": str(best_move["target"]),
+                    "chosen_candidate_index": int(best_move["cand_idx"]),
+                    "aa3": str(best_move["aa3"]),
+                    "vdm_id_u64": int(best_move["vdm_id_u64"]),
+                    "score": float(best_move["score"]),
+                    "geom_score": float(best_move["geom_score"]),
+                    "improvement": int(best_move["improvement"]),
+                    "remaining_unsatisfied": list(sorted(missing)),
+                }
+            )
 
         # Write final
         _write_text(args.out_pdb, "\n".join(_format_pdb_atom(a) for a in cur_atoms) + "\nEND\n")
