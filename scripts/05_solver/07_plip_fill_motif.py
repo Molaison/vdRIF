@@ -290,6 +290,32 @@ def _score_candidate_for_target(
                     continue
                 best = max(best, 5.0 - dist + (ang - 90.0) / 120.0)
 
+    if "cation" in lig_roles:
+        # For ligand cations, only score charged carboxylates (ASP/GLU-like atom pairs),
+        # not generic neutral carbonyl oxygens.
+        if "OD1" in name_to_xyz and "OD2" in name_to_xyz:
+            for anm in ("OD1", "OD2"):
+                axyz = name_to_xyz[anm]
+                dist = float(np.linalg.norm(axyz - lig_xyz))
+                if dist <= 4.2:
+                    best = max(best, 4.2 - dist)
+        if "OE1" in name_to_xyz and "OE2" in name_to_xyz:
+            for anm in ("OE1", "OE2"):
+                axyz = name_to_xyz[anm]
+                dist = float(np.linalg.norm(axyz - lig_xyz))
+                if dist <= 4.2:
+                    best = max(best, 4.2 - dist)
+
+    if "anion" in lig_roles:
+        # For ligand anions, only score canonical basic sidechain nitrogens.
+        for cnm in ("NZ", "NE", "NH1", "NH2"):
+            cxyz = name_to_xyz.get(cnm)
+            if cxyz is None:
+                continue
+            dist = float(np.linalg.norm(cxyz - lig_xyz))
+            if dist <= 4.2:
+                best = max(best, 4.2 - dist)
+
     return best
 
 

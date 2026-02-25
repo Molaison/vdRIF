@@ -598,8 +598,6 @@ def main() -> None:
     # Legacy (permissive) acceptor typing kept for backwards-compatibility with earlier debugging runs.
     acceptor_atoms_legacy = set(acceptor_atoms_plip) | {"NE2", "SD", "SG"}
     acceptor_atoms = acceptor_atoms_plip if str(args.acceptor_model) == "plip" else acceptor_atoms_legacy
-    cation_atoms = {"NZ", "NH1", "NH2"}
-    anion_atoms = {"OD1", "OD2", "OE1", "OE2"}
     backbone_atoms = {"N", "C", "O", "CA"}
 
     exclude_aa3 = {x.strip().upper() for x in str(args.exclude_aa3).split(",") if x.strip()}
@@ -691,8 +689,12 @@ def main() -> None:
             else:
                 donor_base_idx.append(int(atom_order.index(bnm)))
 
-        cation_idx = atom_indices(cation_atoms)
-        anion_idx = atom_indices(anion_atoms)
+        # Ionic typing should be residue-aware (charged sidechains only).
+        # Name-only typing overcounts neutral carbonyls like GLN OE1 as "anion".
+        lys_cation_idx = atom_indices({"NZ"})
+        arg_cation_idx = atom_indices({"NE", "NH1", "NH2"})
+        asp_anion_idx = atom_indices({"OD1", "OD2"})
+        glu_anion_idx = atom_indices({"OE1", "OE2"})
 
         # Sidechain direction indices (for orientation filtering)
         ca_i = int(atom_order.index("CA")) if "CA" in atom_order else -1
@@ -777,6 +779,7 @@ def main() -> None:
             # Step 1: transform only the relevant polar atom sets to evaluate satisfaction.
             Rw_ok = Rw[ok_local]
             tw_ok = tw[ok_local]
+            aa_ok = aa_arr[start:end][ok_local]
 
             def world_coords_subset(idxs: list[int]) -> np.ndarray:
                 if not idxs:
@@ -798,8 +801,10 @@ def main() -> None:
                             continue
                         donors_base_w[:, j_d, :] = base_w_unique[:, base_idx_to_col[b], :]
             acceptors_w = world_coords_subset(acceptor_idx)
-            cations_w = world_coords_subset(cation_idx)
-            anions_w = world_coords_subset(anion_idx)
+            lys_cations_w = world_coords_subset(lys_cation_idx)
+            arg_cations_w = world_coords_subset(arg_cation_idx)
+            asp_anions_w = world_coords_subset(asp_anion_idx)
+            glu_anions_w = world_coords_subset(glu_anion_idx)
 
             hbd2 = 3.5 * 3.5
             ion2 = 4.0 * 4.0
@@ -881,9 +886,23 @@ def main() -> None:
 
                         sat_mask &= sat_any_h
                     elif need_role == "cation":
-                        sat_mask &= _min_d2_all(cations_w, pxyz) <= ion2
+                        sat_role = np.zeros((ok_local.size,), dtype=bool)
+                        lys_mask = aa_ok == "LYS"
+                        if np.any(lys_mask):
+                            sat_role[lys_mask] = _min_d2_all(lys_cations_w[lys_mask], pxyz) <= ion2
+                        arg_mask = aa_ok == "ARG"
+                        if np.any(arg_mask):
+                            sat_role[arg_mask] = _min_d2_all(arg_cations_w[arg_mask], pxyz) <= ion2
+                        sat_mask &= sat_role
                     elif need_role == "anion":
-                        sat_mask &= _min_d2_all(anions_w, pxyz) <= ion2
+                        sat_role = np.zeros((ok_local.size,), dtype=bool)
+                        asp_mask = aa_ok == "ASP"
+                        if np.any(asp_mask):
+                            sat_role[asp_mask] = _min_d2_all(asp_anions_w[asp_mask], pxyz) <= ion2
+                        glu_mask = aa_ok == "GLU"
+                        if np.any(glu_mask):
+                            sat_role[glu_mask] = _min_d2_all(glu_anions_w[glu_mask], pxyz) <= ion2
+                        sat_mask &= sat_role
                 cov_arr |= (sat_mask.astype(np.uint16) << np.uint16(bit))
 
             # Early prune: only candidates that satisfy at least one polar atom can proceed.

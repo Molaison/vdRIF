@@ -67,8 +67,22 @@ def main() -> None:
     acceptor_atoms_plip = {"O", "OD1", "OD2", "OE1", "OE2", "OG", "OG1", "OH", "ND1"}
     acceptor_atoms_legacy = set(acceptor_atoms_plip) | {"NE2", "SD", "SG"}
     acceptor_atoms = acceptor_atoms_plip if str(args.acceptor_model) == "plip" else acceptor_atoms_legacy
-    cation_atoms = {"NZ", "NH1", "NH2"}  # minimal
-    anion_atoms = {"OD1", "OD2", "OE1", "OE2"}
+
+    def _is_cation_atom(a: dict[str, Any]) -> bool:
+        # Charged sidechains only (avoid neutral donors like GLN/ASN).
+        if a["resn"] == "LYS" and a["name"] == "NZ":
+            return True
+        if a["resn"] == "ARG" and a["name"] in {"NE", "NH1", "NH2"}:
+            return True
+        return False
+
+    def _is_anion_atom(a: dict[str, Any]) -> bool:
+        # Charged carboxylates only (avoid neutral carbonyls like GLN OE1).
+        if a["resn"] == "ASP" and a["name"] in {"OD1", "OD2"}:
+            return True
+        if a["resn"] == "GLU" and a["name"] in {"OE1", "OE2"}:
+            return True
+        return False
 
     hbd2 = float(args.hbond_dist) ** 2
     ion2 = float(args.ion_dist) ** 2
@@ -85,15 +99,15 @@ def main() -> None:
         p = ligand_atoms[name]["xyz"]
 
         # Determine what we need in the motif
-        needs: list[tuple[str, set[str], float]] = []
+        needs: list[tuple[str, set[str] | None, float]] = []
         if "acceptor" in roles:
             needs.append(("donor", donor_atoms, hbd2))
         if "donor" in roles:
             needs.append(("acceptor", acceptor_atoms, hbd2))
         if "cation" in roles:
-            needs.append(("anion", anion_atoms, ion2))
+            needs.append(("anion", None, ion2))
         if "anion" in roles:
-            needs.append(("cation", cation_atoms, ion2))
+            needs.append(("cation", None, ion2))
 
         sat = True
         sat_details = []
@@ -101,8 +115,15 @@ def main() -> None:
             best = None
             best_d2 = None
             for a in motif_atoms:
-                if a["name"] not in allowed:
-                    continue
+                if need_name == "anion":
+                    if not _is_anion_atom(a):
+                        continue
+                elif need_name == "cation":
+                    if not _is_cation_atom(a):
+                        continue
+                else:
+                    if allowed is None or a["name"] not in allowed:
+                        continue
                 d = a["xyz"] - p
                 d2 = float(d @ d)
                 if d2 <= cutoff2 and (best_d2 is None or d2 < best_d2):
