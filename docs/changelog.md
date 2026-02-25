@@ -28,6 +28,10 @@
   - `SITE_DIVERSITY_REWARD=2000`
   - `MIN_UNIQUE_SITES=6`
   - `MAX_PER_SITE=2`
+- Strengthened solver and sweep validation against motif-internal clashes:
+  - solver wrappers now use `CA_PREFILTER=12.0` by default and run `05_validate_motif_internal_clashes.py`.
+  - non-debug solver wrapper now also runs ligand-clash validation (`04_validate_motif_clashes.py`) by default.
+  - balanced sweep now requires internal clash pass by default when marking runs `feasible` (opt-out via `--no-enforce-internal-clash`), and reports `internal_clash_*` fields.
 - Fixed `uv sync` bootstrap in clean worktrees by restoring tracked workspace member:
   - added `vendor/openbabel_meta/pyproject.toml` (meta package for `openbabel-wheel==3.1.1.22`)
   - adjusted `.gitignore` to allow this specific path while still ignoring other `vendor/` contents.

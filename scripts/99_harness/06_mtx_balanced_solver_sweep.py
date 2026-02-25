@@ -26,6 +26,10 @@ def _run(cmd: list[str], cwd: Path) -> None:
     subprocess.run(cmd, check=True, cwd=str(cwd))
 
 
+def _run_allow_failure(cmd: list[str], cwd: Path) -> int:
+    return int(subprocess.run(cmd, check=False, cwd=str(cwd)).returncode)
+
+
 def _parse_int_list(s: str) -> list[int]:
     vals = [x.strip() for x in str(s).split(",") if x.strip()]
     if not vals:
@@ -97,12 +101,17 @@ def _to_md(summary: dict[str, Any]) -> str:
     lines.append("")
     lines.append("## Top runs")
     lines.append("")
-    lines.append("| rank | run_id | feasible | coverage_bits | unique_sites | n_selected | target_dev | avg_score | params |")
-    lines.append("|---:|---:|:---:|---:|---:|---:|---:|---:|---|")
+    lines.append(
+        "| rank | run_id | feasible | internal_ok | worst_overlap | coverage_bits | unique_sites | n_selected | target_dev | avg_score | params |"
+    )
+    lines.append("|---:|---:|:---:|:---:|---:|---:|---:|---:|---:|---:|---|")
     for rank, run in enumerate(summary["runs"][:10], start=1):
         params = run["params"]
+        worst_overlap = run.get("internal_clash_worst_overlap")
+        worst_overlap_str = "-" if worst_overlap is None else f"{float(worst_overlap):.3f}"
         lines.append(
             f"| {rank} | {run['run_id']} | {str(run['feasible']).lower()} | "
+            f"{str(bool(run.get('internal_clash_ok', False))).lower()} | {worst_overlap_str} | "
             f"{run['coverage_bits']} | {run['n_unique_sites_selected']} | {run['n_selected']} | "
             f"{run['target_res_dev']} | {run['avg_selected_score']:.3f} | "
             f"`tr={params['target_res']},tp={params['target_res_penalty']},"
@@ -130,8 +139,18 @@ def main() -> None:
     ap.add_argument("--time-limit-s", type=float, default=120.0)
     ap.add_argument("--num-workers", type=int, default=1)
     ap.add_argument("--grid-size", type=float, default=4.0)
-    ap.add_argument("--ca-prefilter", type=float, default=8.0)
+    ap.add_argument("--ca-prefilter", type=float, default=12.0)
     ap.add_argument("--clash-tol", type=float, default=0.5)
+    ap.add_argument("--ligand-resname", type=str, default="MTX")
+    ap.add_argument("--internal-clash-fail-overlap", type=float, default=0.5)
+    ap.add_argument("--internal-clash-tol", type=float, default=0.5)
+    ap.add_argument(
+        "--no-enforce-internal-clash",
+        action="store_false",
+        dest="enforce_internal_clash",
+        help="Do not require internal clash validator to pass for feasibility.",
+    )
+    ap.set_defaults(enforce_internal_clash=True)
 
     ap.add_argument("--target-res-list", type=str, default="10,11,12")
     ap.add_argument("--target-res-penalty-list", type=str, default="1200,2000,3000")
@@ -180,6 +199,7 @@ def main() -> None:
     outdir = root / "processed/99_harness" / f"mtx_balanced_solver_sweep_{args.tag}"
     outdir.mkdir(parents=True, exist_ok=True)
     solver_py = root / "scripts/05_solver/01_solve_motif.py"
+    internal_validator_py = root / "scripts/05_solver/05_validate_motif_internal_clashes.py"
 
     runs: list[dict[str, Any]] = []
     for i, (target_res, target_res_penalty, site_diversity_reward, min_unique_sites, max_per_site) in enumerate(
@@ -197,6 +217,7 @@ def main() -> None:
         run_dir.mkdir(parents=True, exist_ok=True)
         out_json = run_dir / "motif.json"
         out_pdb = run_dir / "motif.pdb"
+        internal_clash_json = run_dir / "internal_clash.json"
 
         params = {
             "target_res": int(target_res),
@@ -256,6 +277,7 @@ def main() -> None:
             "params": params,
             "motif_json": str(out_json),
             "motif_pdb": str(out_pdb),
+            "internal_clash_json": str(internal_clash_json),
         }
         if available_site_count is not None and int(min_unique_sites) > int(available_site_count):
             run_rec.update(
@@ -270,6 +292,10 @@ def main() -> None:
                     "selected_site_indices": [],
                     "target_res_dev": 10**9,
                     "avg_selected_score": -1e9,
+                    "internal_clash_ok": False,
+                    "internal_clash_ok_raw": False,
+                    "internal_clash_worst_overlap": None,
+                    "internal_clash_validation_returncode": None,
                     "error": (
                         f"Skipped: min_unique_sites={int(min_unique_sites)} exceeds "
                         f"available_site_count={int(available_site_count)}"
@@ -294,7 +320,31 @@ def main() -> None:
             coverage_bits = _bit_count_u16(coverage_bitmask)
             coverage_complete = bool(report.get("coverage_complete", False))
             solver_status = str((report.get("solver") or {}).get("status", ""))
-            feasible = coverage_complete and (solver_status in {"OPTIMAL", "FEASIBLE", "GREEDY"})
+            internal_cmd = [
+                str(args.python),
+                str(internal_validator_py),
+                "--motif-pdb",
+                str(out_pdb),
+                "-o",
+                str(internal_clash_json),
+                "--ligand-resname",
+                str(args.ligand_resname),
+                "--tol",
+                str(float(args.internal_clash_tol)),
+                "--fail-overlap",
+                str(float(args.internal_clash_fail_overlap)),
+            ]
+            internal_rc = _run_allow_failure(internal_cmd, cwd=root)
+            internal_ok_raw = False
+            internal_worst_overlap: float | None = None
+            if internal_clash_json.exists():
+                internal_report = _load_json(internal_clash_json)
+                internal_ok_raw = bool(internal_report.get("ok", False))
+                worst = internal_report.get("worst_overlap")
+                if worst is not None:
+                    internal_worst_overlap = float(worst)
+            internal_ok = bool(internal_ok_raw) if bool(args.enforce_internal_clash) else True
+            feasible = coverage_complete and (solver_status in {"OPTIMAL", "FEASIBLE", "GREEDY"}) and internal_ok
 
             run_rec.update(
                 {
@@ -309,6 +359,10 @@ def main() -> None:
                     "target_res_dev": int(target_dev),
                     "avg_selected_score": float(avg_score),
                     "feasible": bool(feasible),
+                    "internal_clash_ok": bool(internal_ok),
+                    "internal_clash_ok_raw": bool(internal_ok_raw),
+                    "internal_clash_worst_overlap": internal_worst_overlap,
+                    "internal_clash_validation_returncode": int(internal_rc),
                     "objective_value": (report.get("solver") or {}).get("objective_value"),
                 }
             )
@@ -325,6 +379,10 @@ def main() -> None:
                     "selected_site_indices": [],
                     "target_res_dev": 10**9,
                     "avg_selected_score": -1e9,
+                    "internal_clash_ok": False,
+                    "internal_clash_ok_raw": False,
+                    "internal_clash_worst_overlap": None,
+                    "internal_clash_validation_returncode": None,
                     "error": str(e),
                     "skipped_precheck": False,
                 }
@@ -339,6 +397,7 @@ def main() -> None:
             int(bool(r.get("feasible", False))),
             int(r.get("coverage_bits", 0)),
             int(r.get("n_unique_sites_selected", 0)),
+            -float(r.get("internal_clash_worst_overlap", 1e9)),
             -int(r.get("target_res_dev", 10**9)),
             int(r.get("n_selected", 0)),
             float(r.get("avg_selected_score", -1e9)),
@@ -350,6 +409,7 @@ def main() -> None:
 
     n_ok = int(sum(1 for r in runs if bool(r.get("ok", False))))
     n_feasible = int(sum(1 for r in runs if bool(r.get("feasible", False))))
+    n_internal_ok = int(sum(1 for r in runs if bool(r.get("internal_clash_ok_raw", False))))
     n_skipped_precheck = int(sum(1 for r in runs if bool(r.get("skipped_precheck", False))))
 
     summary: dict[str, Any] = {
@@ -372,6 +432,10 @@ def main() -> None:
             "grid_size": float(args.grid_size),
             "ca_prefilter": float(args.ca_prefilter),
             "clash_tol": float(args.clash_tol),
+            "ligand_resname": str(args.ligand_resname),
+            "enforce_internal_clash": bool(args.enforce_internal_clash),
+            "internal_clash_fail_overlap": float(args.internal_clash_fail_overlap),
+            "internal_clash_tol": float(args.internal_clash_tol),
         },
         "sweep": {
             "n_all_combos": len(all_combos),
@@ -384,6 +448,7 @@ def main() -> None:
             "combo_indices": combo_indices,
             "n_ok": n_ok,
             "n_feasible": n_feasible,
+            "n_internal_ok": n_internal_ok,
             "n_skipped_precheck": n_skipped_precheck,
         },
         "recommended": best,

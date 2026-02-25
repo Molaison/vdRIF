@@ -10,12 +10,15 @@ CAND_META="${ROOT}/processed/04_candidates/MTX_candidates.json"
 OUT_JSON="${ROOT}/outputs/05_solver/MTX_motif.json"
 OUT_PDB="${ROOT}/outputs/05_solver/MTX_motif.pdb"
 VAL_JSON="${ROOT}/outputs/05_solver/MTX_motif_validation.json"
+CLASH_JSON="${ROOT}/outputs/05_solver/MTX_motif_clash_validation.json"
+INTERNAL_CLASH_JSON="${ROOT}/outputs/05_solver/MTX_motif_internal_clash_validation.json"
 LOG="${ROOT}/logs/05_solver/MTX_motif.log"
 
 mkdir -p "$(dirname "$OUT_JSON")" "$(dirname "$OUT_PDB")" "$(dirname "$LOG")"
 
 TIME_LIMIT_S="${TIME_LIMIT_S:-300}"
 CLASH_TOL="${CLASH_TOL:-0.5}"
+CA_PREFILTER="${CA_PREFILTER:-12.0}"
 OBJECTIVE_MODE="${OBJECTIVE_MODE:-balanced}"
 TARGET_RES="${TARGET_RES:-12}"
 TARGET_RES_PENALTY="${TARGET_RES_PENALTY:-1200}"
@@ -29,7 +32,7 @@ MAX_PER_SITE="${MAX_PER_SITE:-2}"
   echo "[run] candidates_meta: $CAND_META"
   echo "[run] out_json: $OUT_JSON"
   echo "[run] out_pdb: $OUT_PDB"
-  echo "[run] TIME_LIMIT_S=$TIME_LIMIT_S CLASH_TOL=$CLASH_TOL OBJECTIVE_MODE=$OBJECTIVE_MODE TARGET_RES=$TARGET_RES"
+  echo "[run] TIME_LIMIT_S=$TIME_LIMIT_S CLASH_TOL=$CLASH_TOL CA_PREFILTER=$CA_PREFILTER OBJECTIVE_MODE=$OBJECTIVE_MODE TARGET_RES=$TARGET_RES"
   echo "[run] TARGET_RES_PENALTY=$TARGET_RES_PENALTY SITE_DIVERSITY_REWARD=$SITE_DIVERSITY_REWARD MIN_UNIQUE_SITES=$MIN_UNIQUE_SITES MAX_PER_SITE=$MAX_PER_SITE"
   uv sync -p 3.11 --extra rdkit
   uv run -p 3.11 python "${ROOT}/scripts/05_solver/01_solve_motif.py" \
@@ -43,7 +46,7 @@ MAX_PER_SITE="${MAX_PER_SITE:-2}"
     --time-limit-s "$TIME_LIMIT_S" \
     --num-workers 1 \
     --grid-size 4.0 \
-    --ca-prefilter 8.0 \
+    --ca-prefilter "$CA_PREFILTER" \
     --clash-tol "$CLASH_TOL" \
     --objective-mode "$OBJECTIVE_MODE" \
     --target-res "$TARGET_RES" \
@@ -56,4 +59,17 @@ MAX_PER_SITE="${MAX_PER_SITE:-2}"
     --polar-sites "${ROOT}/outputs/02_polar_sites/MTX_polar_sites.json" \
     --motif-pdb "$OUT_PDB" \
     -o "$VAL_JSON"
+
+  uv run -p 3.11 python "${ROOT}/scripts/05_solver/04_validate_motif_clashes.py" \
+    --motif-pdb "$OUT_PDB" \
+    -o "$CLASH_JSON" \
+    --tol "$CLASH_TOL" \
+    --fail-overlap "$CLASH_TOL"
+
+  uv run -p 3.11 python "${ROOT}/scripts/05_solver/05_validate_motif_internal_clashes.py" \
+    --motif-pdb "$OUT_PDB" \
+    -o "$INTERNAL_CLASH_JSON" \
+    --tol "$CLASH_TOL" \
+    --fail-overlap "$CLASH_TOL" \
+    --ligand-resname MTX
 } 2>&1 | tee "$LOG"
