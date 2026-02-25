@@ -409,6 +409,46 @@ def main() -> None:
     ap.add_argument("--grid-size", type=float, default=4.0)
     ap.add_argument("--ca-prefilter", type=float, default=12.0)
     ap.add_argument("--clash-tol", type=float, default=0.5)
+    ap.add_argument(
+        "--objective-mode",
+        type=str,
+        default="compact",
+        choices=["compact", "balanced"],
+        help=(
+            "compact: legacy objective (min residues first). "
+            "balanced: favor target residue count + site diversity for fuller pockets."
+        ),
+    )
+    ap.add_argument(
+        "--target-res",
+        type=int,
+        default=0,
+        help="Target residue count for balanced objective (0 => midpoint of [min-res,max-res]).",
+    )
+    ap.add_argument(
+        "--target-res-penalty",
+        type=int,
+        default=2000,
+        help="Penalty weight for |n_selected - target_res| in balanced objective.",
+    )
+    ap.add_argument(
+        "--site-diversity-reward",
+        type=int,
+        default=1200,
+        help="Reward per unique site index used in balanced objective.",
+    )
+    ap.add_argument(
+        "--min-unique-sites",
+        type=int,
+        default=0,
+        help="Optional hard lower bound on number of unique site_index values selected (0 disables).",
+    )
+    ap.add_argument(
+        "--max-per-site",
+        type=int,
+        default=0,
+        help="Optional hard cap on selected residues per site_index (0 disables).",
+    )
     args = ap.parse_args()
 
     params = SolveParams(
@@ -422,6 +462,10 @@ def main() -> None:
     )
     if params.num_workers != 1:
         raise ValueError("For determinism, require --num-workers=1.")
+    if int(args.min_unique_sites) < 0:
+        raise ValueError("--min-unique-sites must be >= 0.")
+    if int(args.max_per_site) < 0:
+        raise ValueError("--max-per-site must be >= 0.")
 
     meta = _load_json(args.candidates_meta)
     polar_atoms: list[str] = meta["polar_atoms"]
@@ -433,6 +477,7 @@ def main() -> None:
     cand_id = z["cand_id_u64"].astype(np.uint64)
     cover = z["cover_mask_u16"].astype(np.uint16)
     score_f = z["score_f32"].astype(np.float64)
+    site_index = z["site_index_u16"].astype(np.uint16) if "site_index_u16" in z.files else np.zeros_like(cand_id, dtype=np.uint16)
     aa3 = z["aa3"]
     xform12 = z["xform_world_stub_12_f32"]
     center_atom_xyz_stub = z["center_atom_xyz_stub_f32"] if "center_atom_xyz_stub_f32" in z.files else None
@@ -462,6 +507,8 @@ def main() -> None:
     selected_sorted: list[int]
     solver_report: dict[str, Any]
     if str(args.solver) == "greedy":
+        if str(args.objective_mode) != "compact":
+            raise ValueError("Greedy solver supports only --objective-mode compact. Use cp_sat for balanced objective.")
         if center_atom_xyz_stub is None or atom_order is None:
             raise ValueError("Greedy solver requires full-atom candidates (center_atom_xyz_stub_f32 + atom_order).")
         selected_sorted = _solve_greedy(
@@ -476,7 +523,13 @@ def main() -> None:
             atom_order=atom_order,
             params=params,
         )
-        solver_report = {"name": "greedy", "status": "GREEDY", "objective_value": None, "n_conflicts": None}
+        solver_report = {
+            "name": "greedy",
+            "status": "GREEDY",
+            "objective_mode": "compact",
+            "objective_value": None,
+            "n_conflicts": None,
+        }
     else:
         # Build conflicts (motif internal clashes) using CA grid for pruning.
         conflicts = _build_conflicts_grid(
@@ -492,10 +545,11 @@ def main() -> None:
 
         model = cp_model.CpModel()
         x = [model.NewBoolVar(f"x_{i}") for i in range(n)]
+        selected_count_expr = sum(x)
 
         # Cardinality
-        model.Add(sum(x) >= params.min_res)
-        model.Add(sum(x) <= params.max_res)
+        model.Add(selected_count_expr >= params.min_res)
+        model.Add(selected_count_expr <= params.max_res)
 
         # Coverage constraints
         for b, atom_name in enumerate(polar_atoms):
@@ -508,20 +562,60 @@ def main() -> None:
         for i, j in conflicts:
             model.Add(x[i] + x[j] <= 1)
 
-        # Objective: lexicographic (encoded as 1 linear objective):
-        # 1) minimize number of residues (prefer smaller motifs; satisfies user's \"8-15\" as a bound)
-        # 2) maximize total score (within the minimal count)
-        # 3) deterministic tie-break by candidate rank
-        #
-        # Encode as: maximize sum( gain_i - B ) * x_i where B is large enough that any +1 residue loses
-        # against any possible gain difference, thus enforcing \"minimize count\" first.
+        # Site-level variables for diversity/caps.
+        site_to_idxs: dict[int, list[int]] = {}
+        for i, s in enumerate(site_index.tolist()):
+            site_to_idxs.setdefault(int(s), []).append(i)
+        site_use_vars: dict[int, cp_model.IntVar] = {}
+        max_per_site = int(args.max_per_site)
+        for s in sorted(site_to_idxs):
+            idxs = site_to_idxs[s]
+            y = model.NewBoolVar(f"site_use_{s}")
+            site_use_vars[s] = y
+            model.Add(sum(x[i] for i in idxs) >= y)
+            for i in idxs:
+                model.Add(x[i] <= y)
+            if max_per_site > 0:
+                model.Add(sum(x[i] for i in idxs) <= max_per_site)
+
+        min_unique_sites = int(args.min_unique_sites)
+        if min_unique_sites > 0:
+            if min_unique_sites > len(site_use_vars):
+                raise ValueError(
+                    f"--min-unique-sites={min_unique_sites} exceeds available sites {len(site_use_vars)}."
+                )
+            model.Add(sum(site_use_vars.values()) >= min_unique_sites)
+
         score_int = np.round(np.clip(score_f, -1e6, 1e6) * 1000.0).astype(np.int64)
         tie_int = (n - 1 - rank).astype(np.int64)  # earlier rank => larger tie
         gain = score_int + tie_int
-        span = int(params.max_res) * int(gain.max() - gain.min())
-        B = span + 1
-        coeff = gain - B
-        model.Maximize(sum(int(coeff[i]) * x[i] for i in range(n)))
+        objective_mode = str(args.objective_mode)
+        target_res_effective: int | None = None
+        if objective_mode == "compact":
+            # Legacy lexicographic objective:
+            # 1) minimize residues
+            # 2) maximize score+tiebreak
+            span = int(params.max_res) * int(gain.max() - gain.min())
+            B = span + 1
+            coeff = gain - B
+            model.Maximize(sum(int(coeff[i]) * x[i] for i in range(n)))
+        else:
+            target_res = int(args.target_res)
+            if target_res <= 0:
+                target_res = (int(params.min_res) + int(params.max_res)) // 2
+            target_res = max(int(params.min_res), min(int(params.max_res), target_res))
+            target_res_effective = target_res
+
+            dev = model.NewIntVar(0, int(params.max_res), "target_res_dev")
+            model.Add(dev >= selected_count_expr - target_res)
+            model.Add(dev >= target_res - selected_count_expr)
+
+            diversity_expr = sum(site_use_vars.values()) if site_use_vars else 0
+            model.Maximize(
+                sum(int(gain[i]) * x[i] for i in range(n))
+                + int(args.site_diversity_reward) * diversity_expr
+                - int(args.target_res_penalty) * dev
+            )
 
         solver = cp_model.CpSolver()
         solver.parameters.max_time_in_seconds = params.time_limit_s
@@ -535,11 +629,15 @@ def main() -> None:
 
         selected = [i for i in range(n) if solver.Value(x[i]) == 1]
         selected_sorted = sorted(selected, key=lambda i: (-float(score_f[i]), int(cand_id[i])))
+        unique_sites_selected = len({int(site_index[i]) for i in selected})
         solver_report = {
             "name": "cp_sat",
             "status": solver.StatusName(status),
+            "objective_mode": objective_mode,
             "objective_value": float(solver.ObjectiveValue()),
             "n_conflicts": len(conflicts),
+            "n_unique_sites_selected": unique_sites_selected,
+            "target_res_effective": target_res_effective,
         }
 
     # Coverage report
@@ -547,6 +645,7 @@ def main() -> None:
     for i in selected_sorted:
         cov |= int(cover[i])
     need = (1 << len(polar_atoms)) - 1
+    selected_site_indices = sorted({int(site_index[i]) for i in selected_sorted})
 
     report = {
         "inputs": {
@@ -563,10 +662,18 @@ def main() -> None:
             "ca_prefilter": params.ca_prefilter,
             "clash_tol": params.clash_tol,
             "solver": str(args.solver),
+            "objective_mode": str(args.objective_mode),
+            "target_res": int(args.target_res),
+            "target_res_penalty": int(args.target_res_penalty),
+            "site_diversity_reward": int(args.site_diversity_reward),
+            "min_unique_sites": int(args.min_unique_sites),
+            "max_per_site": int(args.max_per_site),
         },
         "solver": solver_report,
         "n_candidates": n,
         "n_selected": len(selected_sorted),
+        "n_unique_sites_selected": len(selected_site_indices),
+        "selected_site_indices": selected_site_indices,
         "coverage_bitmask": int(cov),
         "coverage_complete": bool(cov == need),
         "polar_atoms": polar_atoms,
@@ -575,6 +682,7 @@ def main() -> None:
                 "cand_id_u64": int(cand_id[i]),
                 "score": float(score_f[i]),
                 "aa3": str(aa3[i]),
+                "site_index_u16": int(site_index[i]),
                 "cover_mask_u16": int(cover[i]),
             }
             for i in selected_sorted

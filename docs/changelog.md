@@ -1,5 +1,23 @@
 # Changelog
 
+## 2026-02-25
+
+- Candidate generation (`scripts/04_candidates/01_generate_candidates.py`) now supports pocket-quality controls:
+  - CA-to-ligand-centroid shell bounds (`--min-ca-lig-centroid-dist`, `--max-ca-lig-centroid-dist`)
+  - weighted scoring terms for sidechain-facing and shell preference (`--score-w-*`, `--ca-shell-*`).
+- Solver (`scripts/05_solver/01_solve_motif.py`) now supports `--objective-mode balanced`:
+  - targets a configurable residue count (`--target-res`, `--target-res-penalty`)
+  - rewards unique site usage (`--site-diversity-reward`)
+  - optional hard site constraints (`--min-unique-sites`, `--max-per-site`).
+- Updated MTX run scripts to default to pocket-completion-friendly settings:
+  - `scripts/04_candidates/01_run_mtx_candidates_debug.sh`
+  - `scripts/04_candidates/02_run_mtx_candidates.sh`
+  - `scripts/05_solver/01_run_mtx_solver_debug.sh`
+  - `scripts/05_solver/02_run_mtx_solver.sh`
+- Added synthetic smoke harness to verify balanced objective behavior:
+  - `scripts/99_harness/05_solver_balanced_objective_smoke.py`
+  - `scripts/99_harness/05_run_solver_balanced_objective_smoke.sh`
+
 ## 2026-02-02
 
 - Extended symmetric ligand site-frame handling beyond `coo` to aromatic `ph`/`phenol` (`CD1/CD2` swap frames) in `scripts/02_polar_sites/03_build_ligand_site_frames.py`.

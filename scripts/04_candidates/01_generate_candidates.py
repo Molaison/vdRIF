@@ -435,6 +435,55 @@ def main() -> None:
         default=0.0,
         help="Minimum dot( sidechain_dir , direction-to-ligand-centroid ) to accept a candidate (default 0.0).",
     )
+    ap.add_argument(
+        "--min-ca-lig-centroid-dist",
+        type=float,
+        default=0.0,
+        help="Minimum CA-to-ligand-centroid distance (Angstrom). 0 disables lower bound.",
+    )
+    ap.add_argument(
+        "--max-ca-lig-centroid-dist",
+        type=float,
+        default=1.0e9,
+        help="Maximum CA-to-ligand-centroid distance (Angstrom). Large default disables upper bound.",
+    )
+    ap.add_argument("--score-w-prior", type=float, default=1.0, help="Weight for vdM prior score term.")
+    ap.add_argument(
+        "--score-w-coverage",
+        type=float,
+        default=1e-3,
+        help="Weight for coverage popcount term in candidate ranking.",
+    )
+    ap.add_argument(
+        "--score-w-facing",
+        type=float,
+        default=0.0,
+        help="Weight for sidechain-facing dot score (0 keeps legacy behavior).",
+    )
+    ap.add_argument(
+        "--score-w-centroid-facing",
+        type=float,
+        default=0.0,
+        help="Weight for sidechain-to-ligand-centroid facing dot score (0 keeps legacy behavior).",
+    )
+    ap.add_argument(
+        "--score-w-ca-shell",
+        type=float,
+        default=0.0,
+        help="Weight for CA shell score around ligand centroid (0 keeps legacy behavior).",
+    )
+    ap.add_argument(
+        "--ca-shell-center",
+        type=float,
+        default=8.0,
+        help="Preferred CA-to-ligand-centroid distance (Angstrom) for shell scoring.",
+    )
+    ap.add_argument(
+        "--ca-shell-width",
+        type=float,
+        default=2.5,
+        help="Width (Angstrom) for CA shell score; larger means weaker penalty.",
+    )
     ap.add_argument("--require-full-coverage", action="store_true")
     args = ap.parse_args()
 
@@ -515,6 +564,15 @@ def main() -> None:
     min_prot_donor_angle = math.radians(float(args.min_prot_donor_angle_deg))
     min_lig_donor_angle = math.radians(float(args.min_lig_donor_angle_deg))
     max_lig_donor_ha2 = float(args.max_lig_donor_ha_dist) ** 2
+    min_ca_lig_centroid_dist = float(args.min_ca_lig_centroid_dist)
+    max_ca_lig_centroid_dist = float(args.max_ca_lig_centroid_dist)
+    score_w_prior = float(args.score_w_prior)
+    score_w_coverage = float(args.score_w_coverage)
+    score_w_facing = float(args.score_w_facing)
+    score_w_centroid_facing = float(args.score_w_centroid_facing)
+    score_w_ca_shell = float(args.score_w_ca_shell)
+    ca_shell_center = float(args.ca_shell_center)
+    ca_shell_width = max(float(args.ca_shell_width), 1e-6)
 
     for site in sites:
         # Only polar atoms explicitly associated with this ligand site-frame are considered coverable from it.
@@ -806,6 +864,8 @@ def main() -> None:
             # then apply facing + full-atom ligand clash filter.
             loc_all = center_xyz_stub[start:end][pass_local].astype(np.float64)  # (n_pass,atoms,3)
             world_all = np.einsum("nij,nkj->nki", Rw[pass_local], loc_all) + tw[pass_local][:, None, :]
+            face_score = np.zeros((pass_idx.shape[0],), dtype=np.float64)
+            centroid_face_score = np.zeros((pass_idx.shape[0],), dtype=np.float64)
 
             if args.require_sidechain_facing:
                 if ca_i < 0 or not sidechain_idx:
@@ -819,6 +879,9 @@ def main() -> None:
                 pass_local = pass_local[ca_ok]
                 pass_cov = pass_cov[ca_ok]
                 pass_idx = pass_idx[ca_ok]
+                face_score = face_score[ca_ok]
+                centroid_face_score = centroid_face_score[ca_ok]
+                ca_xyz = ca_xyz[ca_ok]
 
                 # Prefer CA->CB; fall back to sidechain COM if CB is missing/NaN.
                 v_sc = None
@@ -826,9 +889,9 @@ def main() -> None:
                 if cb_i >= 0:
                     cb_xyz = world_all[:, cb_i, :]
                     cb_ok = np.isfinite(cb_xyz).all(axis=1)
-                    v_sc = np.where(cb_ok[:, None], cb_xyz - ca_xyz[ca_ok], np.nan)
+                    v_sc = np.where(cb_ok[:, None], cb_xyz - ca_xyz, np.nan)
                 if v_sc is None:
-                    v_sc = np.full_like(ca_xyz[ca_ok], np.nan)
+                    v_sc = np.full_like(ca_xyz, np.nan)
 
                 # For candidates without a valid CB vector, compute sidechain COM vector.
                 missing = ~np.isfinite(v_sc).all(axis=1)
@@ -846,7 +909,7 @@ def main() -> None:
                             ],
                             dtype=np.float64,
                         )
-                        v_tmp[has_sc] = sc_com[has_sc] - ca_xyz[ca_ok][missing][has_sc]
+                        v_tmp[has_sc] = sc_com[has_sc] - ca_xyz[missing][has_sc]
                     v_sc[missing] = v_tmp
 
                 n_sc = np.linalg.norm(v_sc, axis=1)
@@ -856,11 +919,11 @@ def main() -> None:
 
                 # Use the mean position of the site’s covered ligand polar atoms as the target direction.
                 tgt = np.mean(np.stack([p for _an, _bit, _roles, p in site_polar], axis=0), axis=0)
-                v_t = tgt[None, :] - ca_xyz[ca_ok]
+                v_t = tgt[None, :] - ca_xyz
                 n_t = np.linalg.norm(v_t, axis=1)
                 ok_t = np.isfinite(n_t) & (n_t > 1e-8)
 
-                v_c = lig_centroid[None, :] - ca_xyz[ca_ok]
+                v_c = lig_centroid[None, :] - ca_xyz
                 n_c = np.linalg.norm(v_c, axis=1)
                 ok_c = np.isfinite(n_c) & (n_c > 1e-8)
 
@@ -883,10 +946,48 @@ def main() -> None:
                 if not np.any(mask_face):
                     continue
 
+                face_full = np.zeros((ok_dir.shape[0],), dtype=np.float64)
+                centroid_full = np.zeros((ok_dir.shape[0],), dtype=np.float64)
+                face_full[np.nonzero(ok_dir)[0]] = dot_t
+                centroid_full[np.nonzero(ok_dir)[0]] = dot_c
+
                 world_all = world_all[mask_face]
                 pass_local = pass_local[mask_face]
                 pass_cov = pass_cov[mask_face]
                 pass_idx = pass_idx[mask_face]
+                face_score = face_full[mask_face]
+                centroid_face_score = centroid_full[mask_face]
+
+            if ca_i < 0:
+                continue
+
+            ca_xyz = world_all[:, ca_i, :]
+            ca_ok = np.isfinite(ca_xyz).all(axis=1)
+            if not np.any(ca_ok):
+                continue
+            world_all = world_all[ca_ok]
+            pass_local = pass_local[ca_ok]
+            pass_cov = pass_cov[ca_ok]
+            pass_idx = pass_idx[ca_ok]
+            face_score = face_score[ca_ok]
+            centroid_face_score = centroid_face_score[ca_ok]
+            ca_xyz = ca_xyz[ca_ok]
+
+            ca_lig_dist = np.linalg.norm(ca_xyz - lig_centroid[None, :], axis=1)
+            ca_shell_ok = (
+                np.isfinite(ca_lig_dist)
+                & (ca_lig_dist >= min_ca_lig_centroid_dist)
+                & (ca_lig_dist <= max_ca_lig_centroid_dist)
+            )
+            if not np.any(ca_shell_ok):
+                continue
+            world_all = world_all[ca_shell_ok]
+            pass_local = pass_local[ca_shell_ok]
+            pass_cov = pass_cov[ca_shell_ok]
+            pass_idx = pass_idx[ca_shell_ok]
+            face_score = face_score[ca_shell_ok]
+            centroid_face_score = centroid_face_score[ca_shell_ok]
+            ca_lig_dist = ca_lig_dist[ca_shell_ok]
 
             ok_full = _clash_mask_full_fast(
                 world_all,
@@ -901,11 +1002,22 @@ def main() -> None:
             pass_local = pass_local[ok_full]
             pass_cov = pass_cov[ok_full]
             pass_idx = pass_idx[ok_full]
+            face_score = face_score[ok_full]
+            centroid_face_score = centroid_face_score[ok_full]
+            ca_lig_dist = ca_lig_dist[ok_full]
 
             # Finally, score and keep top-k for this site.
-            for idx, cov in zip(pass_idx.tolist(), pass_cov.tolist(), strict=True):
-                sc = float(prior[idx]) + 1e-3 * int(cov).bit_count()
-                maybe_add(int(idx), sc, int(cov))
+            cov_pop = np.array([int(c).bit_count() for c in pass_cov.tolist()], dtype=np.float64)
+            shell_score = -np.abs(ca_lig_dist - ca_shell_center) / ca_shell_width
+            score_arr = (
+                score_w_prior * prior[pass_idx]
+                + score_w_coverage * cov_pop
+                + score_w_facing * face_score
+                + score_w_centroid_facing * centroid_face_score
+                + score_w_ca_shell * shell_score
+            )
+            for idx, cov, sc in zip(pass_idx.tolist(), pass_cov.tolist(), score_arr.tolist(), strict=True):
+                maybe_add(int(idx), float(sc), int(cov))
 
         # Emit this site's kept candidates
         if top_k_per_atom > 0:
@@ -1011,6 +1123,15 @@ def main() -> None:
             "chunk_size": int(args.chunk_size),
             "top_per_site": int(args.top_per_site),
             "clash_tol": float(args.clash_tol),
+            "min_ca_lig_centroid_dist": float(args.min_ca_lig_centroid_dist),
+            "max_ca_lig_centroid_dist": float(args.max_ca_lig_centroid_dist),
+            "score_w_prior": float(args.score_w_prior),
+            "score_w_coverage": float(args.score_w_coverage),
+            "score_w_facing": float(args.score_w_facing),
+            "score_w_centroid_facing": float(args.score_w_centroid_facing),
+            "score_w_ca_shell": float(args.score_w_ca_shell),
+            "ca_shell_center": float(args.ca_shell_center),
+            "ca_shell_width": float(args.ca_shell_width),
         },
         "ligand": {"n_heavy_atoms": int(lig_xyz.shape[0]), "heavy_atom_names": lig_names},
         "ligand_donor_h_source": str(lig_donor_h_source),

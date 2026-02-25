@@ -99,7 +99,9 @@ Outputs:
 Non-debug run (expected to be heavier; intended for `dg`):
 
 ```bash
-TOP_PER_SITE=2000 bash scripts/04_candidates/02_run_mtx_candidates.sh
+TOP_PER_SITE=2000 MIN_CA_LIG_DIST=4.0 MAX_CA_LIG_DIST=12.0 \
+SCORE_W_FACING=0.25 SCORE_W_CENTROID_FACING=0.15 SCORE_W_CA_SHELL=0.20 \
+bash scripts/04_candidates/02_run_mtx_candidates.sh
 ```
 
 ### 5) Solve deterministic 8–15 residue motif (MVP)
@@ -115,7 +117,9 @@ Outputs:
 Non-debug run:
 
 ```bash
-TIME_LIMIT_S=300 bash scripts/05_solver/02_run_mtx_solver.sh
+TIME_LIMIT_S=300 OBJECTIVE_MODE=balanced TARGET_RES=11 \
+SITE_DIVERSITY_REWARD=1200 TARGET_RES_PENALTY=2000 \
+bash scripts/05_solver/02_run_mtx_solver.sh
 ```
 
 ### 6) Determinism regression (recommended while iterating)
@@ -124,6 +128,12 @@ Runs candidate generation + solver twice and asserts byte-identical outputs:
 
 ```bash
 bash scripts/99_harness/01_run_mtx_determinism_regression.sh
+```
+
+Quick solver-objective smoke (synthetic toy data; checks `balanced` yields more complete/diverse pocket than `compact`):
+
+```bash
+bash scripts/99_harness/05_run_solver_balanced_objective_smoke.sh
 ```
 
 Note: the default harness uses `processed/03_vdxform/` (debug vdXform). For MTX, that debug library may not contain any viable candidates for the donor atom `N`, causing a hard failure. Use the full libraries instead:
