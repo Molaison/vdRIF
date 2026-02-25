@@ -215,7 +215,7 @@ def _solve_greedy(
     *,
     cand_id: np.ndarray,
     cover: np.ndarray,
-    score_f: np.ndarray,
+    effective_score_f: np.ndarray,
     R: np.ndarray,
     t: np.ndarray,
     ca_xyz: np.ndarray,
@@ -236,7 +236,7 @@ def _solve_greedy(
     ca2 = float(params.ca_prefilter) ** 2
 
     # Deterministic global order by quality: higher score first, then smaller cand_id.
-    order = np.lexsort((cand_id.astype(np.uint64), -score_f.astype(np.float64)))
+    order = np.lexsort((cand_id.astype(np.uint64), -effective_score_f.astype(np.float64)))
 
     selected: list[int] = []
     selected_mask = np.zeros((n,), dtype=bool)
@@ -317,7 +317,7 @@ def _solve_greedy(
     if len(selected) < params.min_res:
         raise RuntimeError(f"Greedy solver could only place {len(selected)} residues (<{params.min_res}).")
 
-    return sorted(selected, key=lambda i: (-float(score_f[i]), int(cand_id[i])))
+    return sorted(selected, key=lambda i: (-float(effective_score_f[i]), int(cand_id[i])))
 
 
 def _dump_motif_pdb(
@@ -409,6 +409,12 @@ def main() -> None:
     ap.add_argument("--grid-size", type=float, default=4.0)
     ap.add_argument("--ca-prefilter", type=float, default=12.0)
     ap.add_argument("--clash-tol", type=float, default=0.5)
+    ap.add_argument(
+        "--pocket-contact-score-weight",
+        type=float,
+        default=0.15,
+        help="Additional weight for candidate pocket_contact_score_f32 in solver ranking/objective.",
+    )
     args = ap.parse_args()
 
     params = SolveParams(
@@ -436,13 +442,23 @@ def main() -> None:
     aa3 = z["aa3"]
     xform12 = z["xform_world_stub_12_f32"]
     center_atom_xyz_stub = z["center_atom_xyz_stub_f32"] if "center_atom_xyz_stub_f32" in z.files else None
+    pocket_contact_count = z["pocket_contact_count_u8"].astype(np.uint8) if "pocket_contact_count_u8" in z.files else None
+    pocket_contact_score_f = (
+        z["pocket_contact_score_f32"].astype(np.float64)
+        if "pocket_contact_score_f32" in z.files
+        else np.zeros_like(score_f, dtype=np.float64)
+    )
 
     n = int(cand_id.shape[0])
     if n == 0:
         raise ValueError("No candidates provided.")
+    if pocket_contact_count is None:
+        pocket_contact_count = np.zeros((n,), dtype=np.uint8)
+
+    effective_score_f = score_f + float(args.pocket_contact_score_weight) * pocket_contact_score_f
 
     # Deterministic ranking for tie-break.
-    order = sorted(range(n), key=lambda i: (-float(score_f[i]), int(cand_id[i])))
+    order = sorted(range(n), key=lambda i: (-float(effective_score_f[i]), int(cand_id[i])))
     rank = np.empty((n,), dtype=np.int32)
     for r, i in enumerate(order):
         rank[i] = r
@@ -467,7 +483,7 @@ def main() -> None:
         selected_sorted = _solve_greedy(
             cand_id=cand_id,
             cover=cover,
-            score_f=score_f,
+            effective_score_f=effective_score_f,
             R=R,
             t=t,
             ca_xyz=ca_xyz,
@@ -515,7 +531,7 @@ def main() -> None:
         #
         # Encode as: maximize sum( gain_i - B ) * x_i where B is large enough that any +1 residue loses
         # against any possible gain difference, thus enforcing \"minimize count\" first.
-        score_int = np.round(np.clip(score_f, -1e6, 1e6) * 1000.0).astype(np.int64)
+        score_int = np.round(np.clip(effective_score_f, -1e6, 1e6) * 1000.0).astype(np.int64)
         tie_int = (n - 1 - rank).astype(np.int64)  # earlier rank => larger tie
         gain = score_int + tie_int
         span = int(params.max_res) * int(gain.max() - gain.min())
@@ -534,7 +550,7 @@ def main() -> None:
             raise RuntimeError(f"CP-SAT failed with status {solver.StatusName(status)}")
 
         selected = [i for i in range(n) if solver.Value(x[i]) == 1]
-        selected_sorted = sorted(selected, key=lambda i: (-float(score_f[i]), int(cand_id[i])))
+        selected_sorted = sorted(selected, key=lambda i: (-float(effective_score_f[i]), int(cand_id[i])))
         solver_report = {
             "name": "cp_sat",
             "status": solver.StatusName(status),
@@ -563,6 +579,7 @@ def main() -> None:
             "ca_prefilter": params.ca_prefilter,
             "clash_tol": params.clash_tol,
             "solver": str(args.solver),
+            "pocket_contact_score_weight": float(args.pocket_contact_score_weight),
         },
         "solver": solver_report,
         "n_candidates": n,
@@ -574,8 +591,11 @@ def main() -> None:
             {
                 "cand_id_u64": int(cand_id[i]),
                 "score": float(score_f[i]),
+                "effective_score": float(effective_score_f[i]),
                 "aa3": str(aa3[i]),
                 "cover_mask_u16": int(cover[i]),
+                "pocket_contact_count": int(pocket_contact_count[i]),
+                "pocket_contact_score": float(pocket_contact_score_f[i]),
             }
             for i in selected_sorted
         ],

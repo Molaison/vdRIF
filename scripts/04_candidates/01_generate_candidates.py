@@ -294,6 +294,46 @@ def _clash_mask_full_fast(
     return ~clash
 
 
+def _pocket_contact_metrics(
+    residue_world_xyz: np.ndarray,  # (n,atoms,3)
+    sidechain_idx: list[int],
+    ligand_xyz: np.ndarray,  # (m,3)
+    contact_dist: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Compute pocket-completeness surrogates for each candidate:
+    - contact_count: number of ligand heavy atoms that have at least one sidechain atom within contact_dist
+    - contact_score: soft closeness score over ligand atoms in [0, m]
+
+    NaNs in residue coordinates are treated as missing atoms.
+    """
+    n = int(residue_world_xyz.shape[0])
+    m = int(ligand_xyz.shape[0])
+    if n == 0:
+        return np.zeros((0,), dtype=np.int16), np.zeros((0,), dtype=np.float64)
+    if m == 0 or not sidechain_idx:
+        return np.zeros((n,), dtype=np.int16), np.zeros((n,), dtype=np.float64)
+
+    sc = residue_world_xyz[:, sidechain_idx, :].astype(np.float64)  # (n,k,3)
+    if sc.shape[1] == 0:
+        return np.zeros((n,), dtype=np.int16), np.zeros((n,), dtype=np.float64)
+
+    d = sc[:, :, None, :] - ligand_xyz[None, None, :, :]
+    d2 = np.einsum("nkmj,nkmj->nkm", d, d)
+    d2 = np.where(np.isfinite(d2), d2, float("inf"))
+    min_d2 = d2.min(axis=1)  # (n,m)
+
+    max_d2 = float(contact_dist) * float(contact_dist)
+    within = min_d2 <= max_d2
+    contact_count = within.sum(axis=1).astype(np.int16)
+
+    # Soft score: for each ligand atom, reward shorter min distance up to contact_dist.
+    min_d = np.sqrt(np.clip(min_d2, 0.0, float("inf")))
+    closeness = np.clip(float(contact_dist) - min_d, 0.0, float(contact_dist)) / float(contact_dist)
+    contact_score = closeness.sum(axis=1).astype(np.float64)
+    return contact_count, contact_score
+
+
 @dataclass(frozen=True)
 class Site:
     site_index: int
@@ -435,6 +475,24 @@ def main() -> None:
         default=0.0,
         help="Minimum dot( sidechain_dir , direction-to-ligand-centroid ) to accept a candidate (default 0.0).",
     )
+    ap.add_argument(
+        "--pocket-contact-dist",
+        type=float,
+        default=4.5,
+        help="Distance cutoff (Angstrom) for sidechain-heavy-atom contacts to ligand atoms (default 4.5).",
+    )
+    ap.add_argument(
+        "--min-pocket-contact-count",
+        type=int,
+        default=1,
+        help="Require at least this many ligand heavy atoms contacted by the sidechain (default 1).",
+    )
+    ap.add_argument(
+        "--pocket-contact-score-weight",
+        type=float,
+        default=0.15,
+        help="Weight of pocket contact score in candidate ranking (default 0.15).",
+    )
     ap.add_argument("--require-full-coverage", action="store_true")
     args = ap.parse_args()
 
@@ -488,6 +546,8 @@ def main() -> None:
     aa3: list[str] = []
     score: list[np.float32] = []
     cover_mask: list[np.uint16] = []
+    pocket_contact_count: list[np.uint8] = []
+    pocket_contact_score: list[np.float32] = []
     xform_world_stub_12: list[np.ndarray] = []
     center_atom_xyz_stub: list[np.ndarray] = []
     cluster_number: list[np.int32] = []
@@ -624,6 +684,8 @@ def main() -> None:
 
         heap_all: list[tuple[float, int, int, int]] = []  # (score, -vdm_id, idx, cov)
         heaps_by_bit: dict[int, list[tuple[float, int, int, int]]] = {bit: [] for _an, bit, _roles, _pxyz in site_polar}
+        pocket_count_by_idx: dict[int, int] = {}
+        pocket_score_by_idx: dict[int, float] = {}
 
         def _maybe_add_to_heap(h: list[tuple[float, int, int, int]], limit: int, idx: int, sc: float, cov: int) -> None:
             v = int(vdm_ids[idx])
@@ -888,6 +950,24 @@ def main() -> None:
                 pass_cov = pass_cov[mask_face]
                 pass_idx = pass_idx[mask_face]
 
+            pocket_count, pocket_score = _pocket_contact_metrics(
+                world_all,
+                sidechain_idx=sidechain_idx,
+                ligand_xyz=lig_xyz,
+                contact_dist=float(args.pocket_contact_dist),
+            )
+            min_contacts = int(args.min_pocket_contact_count)
+            if min_contacts > 0:
+                ok_pocket = pocket_count >= min_contacts
+                if not np.any(ok_pocket):
+                    continue
+                world_all = world_all[ok_pocket]
+                pass_local = pass_local[ok_pocket]
+                pass_cov = pass_cov[ok_pocket]
+                pass_idx = pass_idx[ok_pocket]
+                pocket_count = pocket_count[ok_pocket]
+                pocket_score = pocket_score[ok_pocket]
+
             ok_full = _clash_mask_full_fast(
                 world_all,
                 atom_order_vdw,
@@ -901,10 +981,20 @@ def main() -> None:
             pass_local = pass_local[ok_full]
             pass_cov = pass_cov[ok_full]
             pass_idx = pass_idx[ok_full]
+            pocket_count = pocket_count[ok_full]
+            pocket_score = pocket_score[ok_full]
 
             # Finally, score and keep top-k for this site.
-            for idx, cov in zip(pass_idx.tolist(), pass_cov.tolist(), strict=True):
-                sc = float(prior[idx]) + 1e-3 * int(cov).bit_count()
+            for idx, cov, p_cnt, p_sc in zip(
+                pass_idx.tolist(),
+                pass_cov.tolist(),
+                pocket_count.tolist(),
+                pocket_score.tolist(),
+                strict=True,
+            ):
+                sc = float(prior[idx]) + 1e-3 * int(cov).bit_count() + float(args.pocket_contact_score_weight) * float(p_sc)
+                pocket_count_by_idx[int(idx)] = int(p_cnt)
+                pocket_score_by_idx[int(idx)] = float(p_sc)
                 maybe_add(int(idx), sc, int(cov))
 
         # Emit this site's kept candidates
@@ -940,6 +1030,10 @@ def main() -> None:
             aa3.append(str(aa_arr[idx]))
             score.append(np.float32(sc))
             cover_mask.append(np.uint16(cov))
+            p_cnt = int(pocket_count_by_idx.get(int(idx), 0))
+            p_sc = float(pocket_score_by_idx.get(int(idx), 0.0))
+            pocket_contact_count.append(np.uint8(max(0, min(255, p_cnt))))
+            pocket_contact_score.append(np.float32(p_sc))
             cluster_number.append(np.int32(cluster_number_i32[idx]))
             satisfied_union |= int(cov)
 
@@ -980,6 +1074,8 @@ def main() -> None:
     aa3_arr = np.array([aa3[i] for i in keep_idx], dtype="U3")
     score_arr = np.array([score[i] for i in keep_idx], dtype=np.float32)
     cover_arr = np.array([cover_mask[i] for i in keep_idx], dtype=np.uint16)
+    pocket_contact_count_arr = np.array([pocket_contact_count[i] for i in keep_idx], dtype=np.uint8)
+    pocket_contact_score_arr = np.array([pocket_contact_score[i] for i in keep_idx], dtype=np.float32)
     cluster_number_arr = np.array([cluster_number[i] for i in keep_idx], dtype=np.int32)
     xw12_arr = np.stack([xform_world_stub_12[i] for i in keep_idx], axis=0).astype(np.float32)
     center_stub_arr = np.stack([center_atom_xyz_stub[i] for i in keep_idx], axis=0).astype(np.float32)
@@ -996,6 +1092,8 @@ def main() -> None:
         aa3=aa3_arr,
         score_f32=score_arr,
         cover_mask_u16=cover_arr,
+        pocket_contact_count_u8=pocket_contact_count_arr,
+        pocket_contact_score_f32=pocket_contact_score_arr,
         xform_world_stub_12_f32=xw12_arr,
         center_atom_xyz_stub_f32=center_stub_arr,
     )
@@ -1010,7 +1108,11 @@ def main() -> None:
         "params": {
             "chunk_size": int(args.chunk_size),
             "top_per_site": int(args.top_per_site),
+            "top_per_site_per_atom": int(args.top_per_site_per_atom),
             "clash_tol": float(args.clash_tol),
+            "pocket_contact_dist": float(args.pocket_contact_dist),
+            "min_pocket_contact_count": int(args.min_pocket_contact_count),
+            "pocket_contact_score_weight": float(args.pocket_contact_score_weight),
         },
         "ligand": {"n_heavy_atoms": int(lig_xyz.shape[0]), "heavy_atom_names": lig_names},
         "ligand_donor_h_source": str(lig_donor_h_source),
