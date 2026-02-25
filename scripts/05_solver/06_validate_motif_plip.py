@@ -115,15 +115,35 @@ def _read_plip_idx_list(parent: ET.Element, tag: str) -> list[int]:
     return []
 
 
-def _collect_ligand_atom_serials_from_plip(plipfixed_pdb: Path, ligand_key: tuple[str, str, int]) -> dict[int, str]:
-    resname, chain, resnum = ligand_key
-    out: dict[int, str] = {}
+def _collect_ligand_atom_serials_from_plip(
+    plipfixed_pdb: Path, ligand_key: tuple[str, str, int]
+) -> tuple[tuple[str, str, int], dict[int, str]]:
+    by_res: dict[tuple[str, str, int], dict[int, str]] = {}
     for a in _parse_pdb_atoms(plipfixed_pdb):
-        if a.resname == resname and a.chain == chain and a.resnum == resnum:
-            out[a.serial] = a.atom_name
-    if not out:
-        raise ValueError(f"PLIP fixed PDB does not contain ligand residue {ligand_key}: {plipfixed_pdb}")
-    return out
+        k = (a.resname, a.chain, a.resnum)
+        by_res.setdefault(k, {})[a.serial] = a.atom_name
+
+    # 1) Exact match from the motif PDB residue key.
+    if ligand_key in by_res:
+        return ligand_key, by_res[ligand_key]
+
+    # 2) PLIP may rewrite chain IDs while keeping residue name.
+    resname = ligand_key[0]
+    same_resname = {k: v for k, v in by_res.items() if k[0] == resname}
+    if same_resname:
+        # Deterministic tie-break: most atoms first, then lexical key.
+        picked = sorted(same_resname.items(), key=lambda kv: (-len(kv[1]), kv[0]))[0]
+        return picked[0], picked[1]
+
+    # 3) Last resort: if PLIP output has exactly one residue, use it.
+    if len(by_res) == 1:
+        picked = next(iter(by_res.items()))
+        return picked[0], picked[1]
+
+    raise ValueError(
+        f"PLIP fixed PDB does not contain ligand residue {ligand_key}: {plipfixed_pdb}. "
+        f"Available residues: {sorted(by_res.keys())}"
+    )
 
 
 def _collect_interacting_ligand_serials(report_xml: Path, ligand_serials: set[int]) -> set[int]:
@@ -202,9 +222,15 @@ def main() -> None:
         # Some PLIP versions rename output based on input basename, keep a robust glob fallback.
         report_xml = _find_latest(outdir, "*_report.xml")
 
-    plipfixed = _find_latest(outdir, "plipfixed.*.pdb")
+    # PLIP output naming differs by version:
+    # - older: plipfixed.*.pdb
+    # - newer: <basename>_protonated.pdb
+    try:
+        plipfixed = _find_latest(outdir, "plipfixed.*.pdb")
+    except FileNotFoundError:
+        plipfixed = _find_latest(outdir, "*_protonated.pdb")
 
-    ligand_serial_to_name = _collect_ligand_atom_serials_from_plip(plipfixed, ligand_key)
+    resolved_ligand_key, ligand_serial_to_name = _collect_ligand_atom_serials_from_plip(plipfixed, ligand_key)
     interacting_serials = _collect_interacting_ligand_serials(report_xml, set(ligand_serial_to_name.keys()))
 
     satisfied_by_name = {ligand_serial_to_name[i] for i in interacting_serials}
@@ -215,7 +241,14 @@ def main() -> None:
     payload = {
         "all_satisfied": len(unsatisfied_polar) == 0,
         "inputs": {"motif_pdb": str(args.motif_pdb), "polar_sites": str(args.polar_sites)},
-        "ligand": {"resname": ligand_key[0], "chain": ligand_key[1], "resnum": ligand_key[2]},
+        "ligand": {
+            "motif_resname": ligand_key[0],
+            "motif_chain": ligand_key[1],
+            "motif_resnum": ligand_key[2],
+            "plip_resname": resolved_ligand_key[0],
+            "plip_chain": resolved_ligand_key[1],
+            "plip_resnum": resolved_ligand_key[2],
+        },
         "n_polar_atoms": len(polar_atom_names),
         "n_satisfied": len(satisfied_polar),
         "satisfied_polar_atoms": satisfied_polar,

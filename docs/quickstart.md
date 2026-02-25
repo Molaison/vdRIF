@@ -177,6 +177,23 @@ python scripts/99_harness/06_compare_pocket_runtime.py \
   --out-md docs/mtx_pocket_runtime_compare_<date>.md
 ```
 
+### 9) Validate conservative cation typing on non-MTX ligands
+
+Run the dedicated harness (auto-generates ligands, compares legacy/new roles, runs PLIP):
+
+```bash
+bash scripts/99_harness/07_run_validate_cation_typing_non_mtx.sh
+```
+
+Main outputs:
+- `processed/99_harness/non_mtx_cation_validate_<tag>/summary.json`
+- `processed/99_harness/non_mtx_cation_validate_<tag>/summary.md`
+
+These reports include:
+- at least 3 non-MTX ionic ligands with extraction + motif + PLIP satisfaction stats,
+- old vs new atom-role comparison and dropped cation atoms,
+- dropped-cation probe analysis with PLIP salt-bridge evidence check.
+
 ## Environment notes (important)
 
 - This workspace’s system `python3` is 3.6.8, and the system RDKit is broken (missing FreeINCHI symbols).

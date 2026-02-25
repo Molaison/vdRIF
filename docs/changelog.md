@@ -1,5 +1,22 @@
 # Changelog
 
+## 2026-02-26
+
+- Tightened conservative cation typing in `scripts/02_polar_sites/01_extract_polar_sites.py`:
+  - RDKit/OpenBabel paths now assign `cation` for formally positive nitrogens only when degree is at least 3.
+  - This keeps stable aminium/quaternary centers while removing pseudo-cation constraints from low-degree conjugated N+ cases.
+- Hardened PLIP validator compatibility in `scripts/05_solver/06_validate_motif_plip.py`:
+  - supports both legacy `plipfixed.*.pdb` and newer `*_protonated.pdb` outputs,
+  - tolerates PLIP residue key rewrites (chain/resnum remap) by deterministic fallback matching.
+- Added non-MTX cation validation harness:
+  - `scripts/99_harness/07_validate_cation_typing_non_mtx.py`
+  - `scripts/99_harness/07_run_validate_cation_typing_non_mtx.sh`
+- Executed non-MTX validation run (3 ligands + dropped-cation probe):
+  - `processed/99_harness/non_mtx_cation_validate_20260226-cation-nonmtx-v2/summary.json`
+  - `processed/99_harness/non_mtx_cation_validate_20260226-cation-nonmtx-v2/summary.md`
+  - Core ligands `GDM/BZA/BTM`: PLIP all satisfied (`3/3` runs).
+  - Dropped-cation probe `DZN`: dropped atom `N1` had no PLIP salt-bridge evidence in legacy focus run, so no rule refinement was required.
+
 ## 2026-02-25
 
 - Hardened candidate chemistry defaults in `scripts/04_candidates/01_generate_candidates.py`:

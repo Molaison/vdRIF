@@ -73,6 +73,21 @@ def _coords(mol: Chem.Mol, atom_idx: int) -> np.ndarray:
     return np.array([p.x, p.y, p.z], dtype=np.float64)
 
 
+def _is_formal_cation_rdkit(atom: Chem.Atom) -> bool:
+    """
+    Conservative cation typing from formal charge.
+
+    Keep positively charged nitrogens only when they look like stable ionic centers
+    (typically aminium/quaternary; degree >= 3). This avoids over-constraining motifs
+    with conjugated N+ atoms that PLIP does not treat as salt-bridge targets.
+    """
+    if int(atom.GetFormalCharge()) <= 0:
+        return False
+    if int(atom.GetAtomicNum()) == 7 and int(atom.GetDegree()) < 3:
+        return False
+    return True
+
+
 def _collect_feature_roles(mol: Chem.Mol) -> dict[int, set[str]]:
     ff = _feature_factory()
     roles_by_atom: dict[int, set[str]] = {}
@@ -92,7 +107,7 @@ def _collect_feature_roles(mol: Chem.Mol) -> dict[int, set[str]]:
     # Add formal-charge-derived ion roles (deterministic)
     for atom in mol.GetAtoms():
         chg = int(atom.GetFormalCharge())
-        if chg > 0:
+        if _is_formal_cation_rdkit(atom):
             roles_by_atom.setdefault(atom.GetIdx(), set()).add("cation")
         elif chg < 0:
             roles_by_atom.setdefault(atom.GetIdx(), set()).add("anion")
@@ -152,6 +167,24 @@ def _iter_sites_openbabel(mol: ob.OBMol, include_h: bool) -> Iterable[AtomSite]:
             "OpenBabel backend requested but `openbabel` could not be imported. "
             "Install/fix OpenBabel, or re-run with `--backend rdkit`."
         ) from e
+
+    def _is_formal_cation_openbabel(atom: Any) -> bool:
+        if int(atom.GetFormalCharge()) <= 0:
+            return False
+        if int(atom.GetAtomicNum()) != 7:
+            return True
+        get_deg = getattr(atom, "GetTotalDegree", None)
+        if callable(get_deg):
+            return int(get_deg()) >= 3
+        # Fallback for older OpenBabel Python bindings.
+        get_val = getattr(atom, "GetTotalValence", None)
+        if callable(get_val):
+            return int(get_val()) >= 3
+        get_exp_val = getattr(atom, "GetExplicitValence", None)
+        if callable(get_exp_val):
+            return int(get_exp_val()) >= 3
+        return False
+
     for atom in ob.OBMolAtomIter(mol):
         atomic_num = int(atom.GetAtomicNum())
         if not include_h and atomic_num == 1:
@@ -167,7 +200,7 @@ def _iter_sites_openbabel(mol: ob.OBMol, include_h: bool) -> Iterable[AtomSite]:
             roles_set.add("acceptor")
 
         chg = int(atom.GetFormalCharge())
-        if chg > 0:
+        if _is_formal_cation_openbabel(atom):
             roles_set.add("cation")
         elif chg < 0:
             roles_set.add("anion")
