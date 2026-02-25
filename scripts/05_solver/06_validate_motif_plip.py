@@ -167,6 +167,12 @@ def main() -> None:
     ap.add_argument("-o", "--out", type=Path, required=True)
     ap.add_argument("--maxthreads", type=int, default=1)
     ap.add_argument("--timeout-s", type=float, default=120.0)
+    ap.add_argument(
+        "--plip-bin",
+        type=str,
+        default="plip",
+        help="PLIP executable path/name (default: plip in PATH).",
+    )
     ap.add_argument("--keep-plip-outdir", action="store_true")
     ap.add_argument("--plip-outdir", type=Path, default=None, help="Optional explicit PLIP output dir (for debugging).")
     args = ap.parse_args()
@@ -184,7 +190,7 @@ def main() -> None:
     outdir.mkdir(parents=True, exist_ok=True)
 
     cmd = [
-        "plip",
+        str(args.plip_bin),
         "-f",
         str(args.motif_pdb),
         "-x",
@@ -220,7 +226,12 @@ def main() -> None:
         "n_satisfied": len(satisfied_polar),
         "satisfied_polar_atoms": satisfied_polar,
         "unsatisfied_polar_atoms": unsatisfied_polar,
-        "plip": {"report_xml": str(report_xml), "plipfixed_pdb": str(plipfixed), "outdir": str(outdir)},
+        "plip": {
+            "plip_bin": str(args.plip_bin),
+            "report_xml": str(report_xml),
+            "plipfixed_pdb": str(plipfixed),
+            "outdir": str(outdir),
+        },
     }
     _write_json(args.out, payload)
 

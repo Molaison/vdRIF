@@ -2,6 +2,13 @@
 
 ## 2026-02-25
 
+- Fixed PLIP-target definition mismatch for ionic sites in `scripts/02_polar_sites/01_extract_polar_sites.py`:
+  - Formal-charge `cation` typing is now conservative for nitrogen (`degree >= 3` required).
+  - This removes over-constrained pseudo-targets like MTX `N5` (charged but not a stable per-atom salt-bridge center in PLIP), while preserving `NA2` as the cation target.
+  - Verified on MTX loose-rescue artifacts: `processed/99_harness/full_vdx_loose_rescue/MTX_motif_plipfill_v4_polarv2_report.json` reaches PLIP `8/8` satisfied with zero ligand/internal clashes.
+- Added explicit PLIP binary plumbing for environments where workspace OpenBabel is broken:
+  - `scripts/05_solver/06_validate_motif_plip.py`: new `--plip-bin`.
+  - `scripts/05_solver/07_plip_fill_motif.py`: forwards `--plip-bin` into PLIP validation.
 - Added ligand-contact-aware pocket shaping to candidate generation (`scripts/04_candidates/01_generate_candidates.py`):
   - New hard filters on sidechain-ligand proximity (`--min-sidechain-ligand-contacts`, `--max-sidechain-min-dist`).
   - New contact-aware scoring term (`--score-weight-contact-count`).
