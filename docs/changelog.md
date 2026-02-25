@@ -10,6 +10,7 @@
   - CP-SAT now includes ligand-contact coverage variables and objective term.
   - Added optional hard lower bound: `--min-ligand-contact-atoms` / `--min-ligand-contact-fraction`.
   - Greedy solver tie-break now prioritizes marginal ligand-contact coverage.
+  - Greedy clash check now compares against all already-selected residues (full-atom) instead of CA-prefiltered neighbors, eliminating missed long-sidechain internal clashes on full vdXform runs.
 - Updated wrappers/harness defaults to use pocket-aware settings:
   - `scripts/04_candidates/01_run_mtx_candidates_debug.sh`
   - `scripts/04_candidates/02_run_mtx_candidates.sh`

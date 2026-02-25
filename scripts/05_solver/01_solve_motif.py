@@ -235,7 +235,6 @@ def _solve_greedy(
     n_lig_atoms = int(lig_contact_bool.shape[1])
 
     vdw = _atom_order_vdw(atom_order)
-    ca2 = float(params.ca_prefilter) ** 2
 
     # Deterministic global order by quality: higher score first, then smaller cand_id.
     order = np.lexsort((cand_id.astype(np.uint64), -score_f.astype(np.float64)))
@@ -252,17 +251,14 @@ def _solve_greedy(
     def clashes(i: int) -> bool:
         if not selected:
             return False
-        d = ca_xyz[np.asarray(selected, dtype=np.int64)] - ca_xyz[i]
-        d2 = np.einsum("ij,ij->i", d, d)
-        near = np.nonzero(d2 <= ca2)[0]
-        if near.size == 0:
-            return False
         Ri = R[i]
         ti = t[i]
         loc = center_atom_xyz_stub[i].astype(np.float64)
         wi = np.einsum("ij,kj->ki", Ri, loc) + ti[None, :]
-        for j_local in near.tolist():
-            if _pair_clash_full_atom(wi, selected_world[j_local], vdw=vdw, tol=params.clash_tol):
+        # selected set is at most 15 residues; check against all selected residues to avoid
+        # missing long-sidechain collisions that can bypass a CA-distance prefilter.
+        for wj in selected_world:
+            if _pair_clash_full_atom(wi, wj, vdw=vdw, tol=params.clash_tol):
                 return True
         return False
 
