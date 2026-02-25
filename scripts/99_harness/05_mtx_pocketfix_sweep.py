@@ -94,6 +94,8 @@ def _to_md(summary: dict[str, Any]) -> str:
     lines.append("## Inputs")
     lines.append(f"- repo_root: `{summary['inputs']['repo_root']}`")
     lines.append(f"- python: `{summary['inputs']['python']}`")
+    lines.append(f"- ligand_tag: `{summary['inputs']['ligand_tag']}`")
+    lines.append(f"- ligand_resname: `{summary['inputs']['ligand_resname']}`")
     lines.append(f"- top_per_site: `{summary['inputs']['top_per_site']}`")
     lines.append(f"- solver: `{summary['inputs']['solver']}`")
     lines.append(f"- ranking_mode: `{summary['ranking']['mode']}`")
@@ -148,6 +150,8 @@ def main() -> None:
         ),
     )
     ap.add_argument("--python", type=str, default=sys.executable, help="Python executable to run pipeline scripts.")
+    ap.add_argument("--ligand-tag", type=str, default="MTX", help="Prefix for output file names.")
+    ap.add_argument("--ligand-resname", type=str, default="MTX", help="Residue name used in motif PDB validation.")
     ap.add_argument("--ligand-pdb", type=Path, default=Path("inputs/01_cgmap/MTX.pdb"))
     ap.add_argument("--polar-sites", type=Path, default=Path("outputs/02_polar_sites/MTX_polar_sites.json"))
     ap.add_argument("--site-frames", type=Path, default=Path("outputs/02_polar_sites/MTX_site_frames.json"))
@@ -194,15 +198,17 @@ def main() -> None:
     configs = [all_cfg[n] for n in chosen_names]
 
     results: list[dict[str, Any]] = []
+    ligand_tag = str(args.ligand_tag).strip() or "MTX"
+    ligand_resname = str(args.ligand_resname).strip() or "MTX"
     for cfg in configs:
         run_dir = outdir / cfg.name
         run_dir.mkdir(parents=True, exist_ok=True)
-        cand_prefix = run_dir / "MTX_candidates"
-        motif_json = run_dir / "MTX_motif.json"
-        motif_pdb = run_dir / "MTX_motif.pdb"
-        val_json = run_dir / "MTX_motif_validation.json"
-        clash_json = run_dir / "MTX_motif_clash_validation.json"
-        internal_json = run_dir / "MTX_motif_internal_clash_validation.json"
+        cand_prefix = run_dir / f"{ligand_tag}_candidates"
+        motif_json = run_dir / f"{ligand_tag}_motif.json"
+        motif_pdb = run_dir / f"{ligand_tag}_motif.pdb"
+        val_json = run_dir / f"{ligand_tag}_motif_validation.json"
+        clash_json = run_dir / f"{ligand_tag}_motif_clash_validation.json"
+        internal_json = run_dir / f"{ligand_tag}_motif_internal_clash_validation.json"
 
         t0 = time.time()
         row: dict[str, Any] = {"name": cfg.name, "params": asdict(cfg)}
@@ -283,8 +289,32 @@ def main() -> None:
             )
             t2 = time.time()
 
-            _run([args.python, str(validate_sat_py), "--polar-sites", str(polar), "--motif-pdb", str(motif_pdb), "-o", str(val_json)])
-            _run([args.python, str(validate_clash_py), "--motif-pdb", str(motif_pdb), "--ligand-resname", "MTX", "-o", str(clash_json)])
+            _run(
+                [
+                    args.python,
+                    str(validate_sat_py),
+                    "--polar-sites",
+                    str(polar),
+                    "--motif-pdb",
+                    str(motif_pdb),
+                    "--ligand-resname",
+                    ligand_resname,
+                    "-o",
+                    str(val_json),
+                ]
+            )
+            _run(
+                [
+                    args.python,
+                    str(validate_clash_py),
+                    "--motif-pdb",
+                    str(motif_pdb),
+                    "--ligand-resname",
+                    ligand_resname,
+                    "-o",
+                    str(clash_json),
+                ]
+            )
             _run(
                 [
                     args.python,
@@ -292,7 +322,7 @@ def main() -> None:
                     "--motif-pdb",
                     str(motif_pdb),
                     "--ligand-resname",
-                    "MTX",
+                    ligand_resname,
                     "-o",
                     str(internal_json),
                 ]
@@ -363,6 +393,8 @@ def main() -> None:
             "repo_root": str(root),
             "python": str(args.python),
             "ligand_pdb": str(ligand),
+            "ligand_tag": ligand_tag,
+            "ligand_resname": ligand_resname,
             "polar_sites": str(polar),
             "site_frames": str(frames),
             "top_per_site": int(args.top_per_site),
