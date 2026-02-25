@@ -204,6 +204,8 @@ def _popcount_u16(x: np.ndarray) -> np.ndarray:
 class SolveParams:
     min_res: int
     max_res: int
+    target_res: int
+    min_cover_per_polar: int
     time_limit_s: float
     num_workers: int
     grid_size: float
@@ -242,7 +244,7 @@ def _solve_greedy(
     selected_mask = np.zeros((n,), dtype=bool)
     selected_world: list[np.ndarray] = []
 
-    uncovered = int(need)
+    cover_count = np.zeros((n_bits,), dtype=np.int32)
 
     def clashes(i: int) -> bool:
         if not selected:
@@ -261,9 +263,14 @@ def _solve_greedy(
                 return True
         return False
 
-    # Phase A: cover all polar atoms.
-    while uncovered != 0 and len(selected) < params.max_res:
-        new_bits = _popcount_u16(cover & np.uint16(uncovered))
+    # Phase A: satisfy per-polar minimum coverage multiplicity.
+    while len(selected) < params.max_res:
+        deficit_bits = [b for b in range(n_bits) if int(cover_count[b]) < int(params.min_cover_per_polar)]
+        if not deficit_bits:
+            break
+        new_bits = np.zeros((n,), dtype=np.int16)
+        for b in deficit_bits:
+            new_bits += _bit_covered(cover, b).astype(np.int16)
         max_new = int(new_bits.max())
         if max_new <= 0:
             break
@@ -279,7 +286,10 @@ def _solve_greedy(
                     continue
                 selected.append(i)
                 selected_mask[i] = True
-                uncovered &= ~int(cover[i])
+                cm = int(cover[i])
+                for b in range(n_bits):
+                    if cm & (1 << b):
+                        cover_count[b] += 1
                 Ri = R[i]
                 ti = t[i]
                 loc = center_atom_xyz_stub[i].astype(np.float64)
@@ -291,12 +301,13 @@ def _solve_greedy(
         if not picked:
             break
 
-    if uncovered != 0:
-        missing = [polar_atoms[b] for b in range(n_bits) if (uncovered & (1 << b)) != 0]
-        raise RuntimeError(f"Greedy solver failed to cover polar atoms: {missing}")
+    missing = [f"{polar_atoms[b]}({int(cover_count[b])}/{int(params.min_cover_per_polar)})" for b in range(n_bits) if int(cover_count[b]) < int(params.min_cover_per_polar)]
+    if missing:
+        raise RuntimeError(f"Greedy solver failed coverage multiplicity: {missing}")
 
-    # Phase B: fill to min_res with best non-clashing candidates.
-    while len(selected) < params.min_res and len(selected) < params.max_res:
+    # Phase B: fill to target_res with best non-clashing candidates.
+    target_fill = max(int(params.min_res), int(params.target_res))
+    while len(selected) < target_fill and len(selected) < params.max_res:
         picked = False
         for i in order.tolist():
             if selected_mask[i]:
@@ -404,6 +415,13 @@ def main() -> None:
     )
     ap.add_argument("--min-res", type=int, default=8)
     ap.add_argument("--max-res", type=int, default=15)
+    ap.add_argument("--target-res", type=int, default=12, help="Preferred motif size inside [min-res,max-res].")
+    ap.add_argument(
+        "--min-cover-per-polar",
+        type=int,
+        default=1,
+        help="Minimum number of selected residues that must cover each ligand polar atom.",
+    )
     ap.add_argument("--time-limit-s", type=float, default=60.0)
     ap.add_argument("--num-workers", type=int, default=1, help="Set to 1 for determinism.")
     ap.add_argument("--grid-size", type=float, default=4.0)
@@ -414,12 +432,20 @@ def main() -> None:
     params = SolveParams(
         min_res=int(args.min_res),
         max_res=int(args.max_res),
+        target_res=int(args.target_res),
+        min_cover_per_polar=int(args.min_cover_per_polar),
         time_limit_s=float(args.time_limit_s),
         num_workers=int(args.num_workers),
         grid_size=float(args.grid_size),
         ca_prefilter=float(args.ca_prefilter),
         clash_tol=float(args.clash_tol),
     )
+    if not (params.min_res <= params.target_res <= params.max_res):
+        raise ValueError(
+            f"Require min_res <= target_res <= max_res, got {params.min_res} <= {params.target_res} <= {params.max_res}."
+        )
+    if params.min_cover_per_polar < 1:
+        raise ValueError(f"--min-cover-per-polar must be >=1, got {params.min_cover_per_polar}.")
     if params.num_workers != 1:
         raise ValueError("For determinism, require --num-workers=1.")
 
@@ -492,36 +518,41 @@ def main() -> None:
 
         model = cp_model.CpModel()
         x = [model.NewBoolVar(f"x_{i}") for i in range(n)]
+        sum_x = sum(x)
 
         # Cardinality
-        model.Add(sum(x) >= params.min_res)
-        model.Add(sum(x) <= params.max_res)
+        model.Add(sum_x >= params.min_res)
+        model.Add(sum_x <= params.max_res)
 
         # Coverage constraints
         for b, atom_name in enumerate(polar_atoms):
             idxs = [i for i in range(n) if int(cover[i]) & (1 << b)]
             if not idxs:
                 raise ValueError(f"No candidates cover polar atom {atom_name} (bit {b}).")
-            model.Add(sum(x[i] for i in idxs) >= 1)
+            if len(idxs) < params.min_cover_per_polar:
+                raise ValueError(
+                    f"Not enough candidates for polar atom {atom_name}: have {len(idxs)}, "
+                    f"need at least {params.min_cover_per_polar}."
+                )
+            model.Add(sum(x[i] for i in idxs) >= params.min_cover_per_polar)
 
         # Clash constraints
         for i, j in conflicts:
             model.Add(x[i] + x[j] <= 1)
 
-        # Objective: lexicographic (encoded as 1 linear objective):
-        # 1) minimize number of residues (prefer smaller motifs; satisfies user's \"8-15\" as a bound)
-        # 2) maximize total score (within the minimal count)
-        # 3) deterministic tie-break by candidate rank
-        #
-        # Encode as: maximize sum( gain_i - B ) * x_i where B is large enough that any +1 residue loses
-        # against any possible gain difference, thus enforcing \"minimize count\" first.
+        # Objective: maximize pocket quality while staying close to target motif size.
         score_int = np.round(np.clip(score_f, -1e6, 1e6) * 1000.0).astype(np.int64)
+        score_shift = score_int - int(score_int.min())
+        cov_bits = _popcount_u16(cover).astype(np.int64)
         tie_int = (n - 1 - rank).astype(np.int64)  # earlier rank => larger tie
-        gain = score_int + tie_int
-        span = int(params.max_res) * int(gain.max() - gain.min())
-        B = span + 1
-        coeff = gain - B
-        model.Maximize(sum(int(coeff[i]) * x[i] for i in range(n)))
+        gain = (score_shift * 1000) + (cov_bits * 5000) + tie_int
+
+        size_dev = model.NewIntVar(0, params.max_res, "size_dev")
+        model.Add(size_dev >= sum_x - params.target_res)
+        model.Add(size_dev >= params.target_res - sum_x)
+        size_penalty = int(gain.max() - gain.min() + 1)
+
+        model.Maximize(sum(int(gain[i]) * x[i] for i in range(n)) - int(size_penalty) * size_dev)
 
         solver = cp_model.CpSolver()
         solver.parameters.max_time_in_seconds = params.time_limit_s
@@ -540,6 +571,8 @@ def main() -> None:
             "status": solver.StatusName(status),
             "objective_value": float(solver.ObjectiveValue()),
             "n_conflicts": len(conflicts),
+            "size_deviation": abs(len(selected_sorted) - params.target_res),
+            "size_penalty": int(size_penalty),
         }
 
     # Coverage report
@@ -557,6 +590,8 @@ def main() -> None:
         "params": {
             "min_res": params.min_res,
             "max_res": params.max_res,
+            "target_res": params.target_res,
+            "min_cover_per_polar": params.min_cover_per_polar,
             "time_limit_s": params.time_limit_s,
             "num_workers": params.num_workers,
             "grid_size": params.grid_size,

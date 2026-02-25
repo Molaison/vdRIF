@@ -99,7 +99,9 @@ Outputs:
 Non-debug run (expected to be heavier; intended for `dg`):
 
 ```bash
-TOP_PER_SITE=2000 bash scripts/04_candidates/02_run_mtx_candidates.sh
+TOP_PER_SITE=2000 \
+SCORE_W_PRIOR=1.0 SCORE_W_COVERAGE=0.05 SCORE_W_CONTACT=0.15 SCORE_W_SHELL=0.3 \
+bash scripts/04_candidates/02_run_mtx_candidates.sh
 ```
 
 ### 5) Solve deterministic 8–15 residue motif (MVP)
@@ -115,7 +117,7 @@ Outputs:
 Non-debug run:
 
 ```bash
-TIME_LIMIT_S=300 bash scripts/05_solver/02_run_mtx_solver.sh
+TIME_LIMIT_S=300 TARGET_RES=12 MIN_COVER_PER_POLAR=1 bash scripts/05_solver/02_run_mtx_solver.sh
 ```
 
 ### 6) Determinism regression (recommended while iterating)
@@ -223,8 +225,8 @@ This repo’s MVP is **vdM-driven candidate placement + deterministic set cover*
    - Compose placement `X_world_stub = X_world_ifg ∘ X_ifg_to_stub`.
    - Fast prefilter by ligand clash with N/CA/C/CB, then compute a **satisfaction bitmask** for the polar atoms assigned to this site.
    - Apply sidechain-facing filtering and a full-atom ligand clash check.
-   - Keep top-K per site (deterministic ties by `vdm_id`).
-5) **Motif solving** (`scripts/05_solver/01_solve_motif.py`): choose 8–15 candidates that cover all polar bits while avoiding residue–residue clashes; write motif PDB.
+   - Rank by a composite pocket-quality score (prior + coverage + sidechain-ligand contact + shell term), then keep top-K per site (deterministic ties by `vdm_id`).
+5) **Motif solving** (`scripts/05_solver/01_solve_motif.py`): choose 8–15 candidates that cover all polar bits with configurable multiplicity (`--min-cover-per-polar`), bias toward a target motif size (`--target-res`), and avoid residue–residue clashes; write motif PDB.
 
 ## Session takeaways: recurring problems + what we changed
 

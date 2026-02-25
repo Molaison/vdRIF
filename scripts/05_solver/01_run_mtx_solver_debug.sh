@@ -15,12 +15,16 @@ LOG="${ROOT}/logs/05_solver/MTX_motif_debug.log"
 
 mkdir -p "$(dirname "$OUT_JSON")" "$(dirname "$OUT_PDB")" "$(dirname "$LOG")"
 
+TARGET_RES="${TARGET_RES:-12}"
+MIN_COVER_PER_POLAR="${MIN_COVER_PER_POLAR:-1}"
+
 {
   echo "[run] ligand: $LIG"
   echo "[run] candidates: $CAND_NPZ"
   echo "[run] candidates_meta: $CAND_META"
   echo "[run] out_json: $OUT_JSON"
   echo "[run] out_pdb: $OUT_PDB"
+  echo "[run] TARGET_RES=$TARGET_RES MIN_COVER_PER_POLAR=$MIN_COVER_PER_POLAR"
   uv sync -p 3.11 --extra rdkit
   uv run -p 3.11 python "${ROOT}/scripts/05_solver/01_solve_motif.py" \
     --candidates-npz "$CAND_NPZ" \
@@ -30,10 +34,12 @@ mkdir -p "$(dirname "$OUT_JSON")" "$(dirname "$OUT_PDB")" "$(dirname "$LOG")"
     --out-pdb "$OUT_PDB" \
     --min-res 8 \
     --max-res 15 \
+    --target-res "$TARGET_RES" \
+    --min-cover-per-polar "$MIN_COVER_PER_POLAR" \
     --time-limit-s 30 \
     --num-workers 1 \
     --grid-size 4.0 \
-    --ca-prefilter 8.0 \
+    --ca-prefilter 12.0 \
     --clash-tol 0.5
 
   uv run -p 3.11 python "${ROOT}/scripts/05_solver/03_validate_motif_polar_satisfaction.py" \

@@ -294,6 +294,50 @@ def _clash_mask_full_fast(
     return ~clash
 
 
+def _sidechain_pocket_features(
+    world_all: np.ndarray,  # (n, atoms, 3)
+    sidechain_idx: list[int],
+    ligand_xyz: np.ndarray,  # (m, 3)
+    contact_dist_min: float,
+    contact_dist_max: float,
+    shell_center_dist: float,
+    shell_half_width: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Return per-candidate pocket features:
+    - contact_count: number of sidechain atoms with min distance to ligand heavy atoms in [min,max]
+    - shell_score:   [0,1] triangular score around a target nearest-contact distance
+    """
+    n = int(world_all.shape[0])
+    if n == 0 or not sidechain_idx:
+        return np.zeros((n,), dtype=np.float64), np.zeros((n,), dtype=np.float64)
+
+    sc_xyz = world_all[:, sidechain_idx, :]  # (n,k,3)
+    sc_ok = np.isfinite(sc_xyz).all(axis=2)
+    if not np.any(sc_ok):
+        return np.zeros((n,), dtype=np.float64), np.zeros((n,), dtype=np.float64)
+
+    d = sc_xyz[:, :, None, :] - ligand_xyz[None, None, :, :]
+    d2 = np.einsum("nkmj,nkmj->nkm", d, d)
+    d2 = np.where(np.isfinite(d2), d2, float("inf"))
+
+    min_d2_per_atom = d2.min(axis=2)  # (n,k)
+    cmin2 = float(contact_dist_min) ** 2
+    cmax2 = float(contact_dist_max) ** 2
+    in_contact = (min_d2_per_atom >= cmin2) & (min_d2_per_atom <= cmax2) & sc_ok
+    contact_count = in_contact.sum(axis=1).astype(np.float64)
+
+    min_d2_any = np.where(sc_ok, min_d2_per_atom, float("inf")).min(axis=1)
+    min_d_any = np.sqrt(np.where(np.isfinite(min_d2_any), min_d2_any, float("inf")))
+
+    width = max(float(shell_half_width), 1e-6)
+    shell_score = 1.0 - np.abs(min_d_any - float(shell_center_dist)) / width
+    shell_score = np.clip(shell_score, 0.0, 1.0)
+    shell_score = np.where(np.isfinite(min_d_any), shell_score, 0.0)
+
+    return contact_count, shell_score
+
+
 @dataclass(frozen=True)
 class Site:
     site_index: int
@@ -434,6 +478,54 @@ def main() -> None:
         type=float,
         default=0.0,
         help="Minimum dot( sidechain_dir , direction-to-ligand-centroid ) to accept a candidate (default 0.0).",
+    )
+    ap.add_argument(
+        "--score-w-prior",
+        type=float,
+        default=1.0,
+        help="Weight for prior-quality term in candidate ranking.",
+    )
+    ap.add_argument(
+        "--score-w-coverage",
+        type=float,
+        default=0.05,
+        help="Weight for satisfied-polar-bit count in candidate ranking.",
+    )
+    ap.add_argument(
+        "--score-w-contact",
+        type=float,
+        default=0.15,
+        help="Weight for sidechain-ligand contact-count term in candidate ranking.",
+    )
+    ap.add_argument(
+        "--score-w-shell",
+        type=float,
+        default=0.3,
+        help="Weight for nearest-contact shell score in candidate ranking.",
+    )
+    ap.add_argument(
+        "--contact-dist-min",
+        type=float,
+        default=2.6,
+        help="Lower bound (A) for counting sidechain-ligand contacts.",
+    )
+    ap.add_argument(
+        "--contact-dist-max",
+        type=float,
+        default=4.6,
+        help="Upper bound (A) for counting sidechain-ligand contacts.",
+    )
+    ap.add_argument(
+        "--shell-center-dist",
+        type=float,
+        default=3.4,
+        help="Target nearest sidechain-ligand distance (A) for pocket shell scoring.",
+    )
+    ap.add_argument(
+        "--shell-half-width",
+        type=float,
+        default=1.8,
+        help="Half-width (A) of triangular shell score around --shell-center-dist.",
     )
     ap.add_argument("--require-full-coverage", action="store_true")
     args = ap.parse_args()
@@ -611,10 +703,20 @@ def main() -> None:
             vdx.get("C_score_ABPLE_A_f32", np.full((vdm_ids.shape[0],), np.nan, dtype=np.float32)).astype(np.float64),
         )
         prior[~np.isfinite(prior)] = -1e9
+        # Convert prior to a positive quality-like scale so contact geometry can meaningfully compete.
+        prior_quality = np.exp(np.clip(prior, -12.0, 4.0))
 
         # Keep top candidates for this site.
         top_k_site = int(args.top_per_site)
         top_k_per_atom = int(args.top_per_site_per_atom)
+        score_w_prior = float(args.score_w_prior)
+        score_w_cov = float(args.score_w_coverage)
+        score_w_contact = float(args.score_w_contact)
+        score_w_shell = float(args.score_w_shell)
+        contact_dist_min = float(args.contact_dist_min)
+        contact_dist_max = float(args.contact_dist_max)
+        shell_center_dist = float(args.shell_center_dist)
+        shell_half_width = float(args.shell_half_width)
 
         # Deterministic ordering key:
         # - primary: higher score is better
@@ -901,10 +1003,27 @@ def main() -> None:
             pass_local = pass_local[ok_full]
             pass_cov = pass_cov[ok_full]
             pass_idx = pass_idx[ok_full]
+            world_all = world_all[ok_full]
 
             # Finally, score and keep top-k for this site.
-            for idx, cov in zip(pass_idx.tolist(), pass_cov.tolist(), strict=True):
-                sc = float(prior[idx]) + 1e-3 * int(cov).bit_count()
+            contact_count, shell_score = _sidechain_pocket_features(
+                world_all=world_all,
+                sidechain_idx=sidechain_idx,
+                ligand_xyz=lig_xyz,
+                contact_dist_min=contact_dist_min,
+                contact_dist_max=contact_dist_max,
+                shell_center_dist=shell_center_dist,
+                shell_half_width=shell_half_width,
+            )
+            cov_bits = np.array([int(c).bit_count() for c in pass_cov.tolist()], dtype=np.float64)
+            score_vec = (
+                score_w_prior * prior_quality[pass_idx]
+                + score_w_cov * cov_bits
+                + score_w_contact * contact_count
+                + score_w_shell * shell_score
+            )
+            for row_i, (idx, cov) in enumerate(zip(pass_idx.tolist(), pass_cov.tolist(), strict=True)):
+                sc = float(score_vec[row_i])
                 maybe_add(int(idx), sc, int(cov))
 
         # Emit this site's kept candidates
@@ -1011,6 +1130,14 @@ def main() -> None:
             "chunk_size": int(args.chunk_size),
             "top_per_site": int(args.top_per_site),
             "clash_tol": float(args.clash_tol),
+            "score_w_prior": float(args.score_w_prior),
+            "score_w_coverage": float(args.score_w_coverage),
+            "score_w_contact": float(args.score_w_contact),
+            "score_w_shell": float(args.score_w_shell),
+            "contact_dist_min": float(args.contact_dist_min),
+            "contact_dist_max": float(args.contact_dist_max),
+            "shell_center_dist": float(args.shell_center_dist),
+            "shell_half_width": float(args.shell_half_width),
         },
         "ligand": {"n_heavy_atoms": int(lig_xyz.shape[0]), "heavy_atom_names": lig_names},
         "ligand_donor_h_source": str(lig_donor_h_source),
