@@ -11,6 +11,10 @@
 - Re-ran non-MTX cation validation:
   - Artifact: `processed/99_harness/non_mtx_cation_typing_20260226-014322/report.json`.
   - Result: `n_tested=5`, `n_solved=5`, `n_plip_compared=5`, with a real dropped-cation case (`GUA N1`) now solvable and PLIP-comparable.
+- Hardened MTX strict-gate reproducibility around cation cutover:
+  - `scripts/02_polar_sites/01_run_mtx_polar_sites.sh` now defaults to `rdkit` backend and removes implicit openbabel→rdkit fallback.
+  - Added `scripts/99_harness/08_run_mtx_strict_plip_gate.sh` to enforce hard cutover flow: regenerate polar sites → regenerate candidates/solve → PLIP hard gate.
+  - Evidence: `processed/99_harness/mtx_strict_plip_gate_20260226-0hm-fix/report.json` (`n_polar_atoms=8`, `n_plip_satisfied=8`, `N5` no longer a cation target).
 
 ## 2026-02-25
 
