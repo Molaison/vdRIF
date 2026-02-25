@@ -410,39 +410,102 @@ def main() -> None:
 
         while missing:
             if current_res_count >= int(args.max_res):
+                report["steps"].append({"status": "max_res_reached", "remaining": list(missing)})
                 break
 
-            target = str(sorted(missing)[0])
-            bit = polar_to_bit.get(target)
-            if bit is None:
-                raise ValueError(f"Target polar atom {target} not found in candidates meta polar_atoms")
+            missing_before = sorted(str(x) for x in missing)
+            missing_before_set = set(missing_before)
 
-            # Candidate indices that claim to cover this target.
-            idxs = np.nonzero((cover & (np.uint16(1 << bit))) != 0)[0]
-            if idxs.size == 0:
-                report["steps"].append({"target": target, "status": "no_candidates"})
-                break
+            # Build a deduplicated proposal pool across all currently-missing targets.
+            # This avoids getting stuck when the lexicographically-first target has no improving candidate.
+            proposal_by_idx: dict[int, dict[str, Any]] = {}
+            targets_without_candidates: list[str] = []
+            for target in missing_before:
+                bit = polar_to_bit.get(target)
+                if bit is None:
+                    raise ValueError(f"Target polar atom {target} not found in candidates meta polar_atoms")
 
-            # Rank candidates deterministically with a geometry heuristic (higher is better),
-            # tie-break by score desc then vdm_id asc then cand index.
-            scored: list[tuple[float, float, int, int]] = []
-            lig_xyz = polar_xyz_by_name[target]
-            lig_roles = polar_by_name[target]
-            for i in idxs:
-                geom = _score_candidate_for_target(
-                    atom_order=atom_order,
-                    center_xyz_stub=center_stub[i],
-                    xform_world_stub_12=xw12[i],
-                    lig_atom_name=target,
-                    lig_xyz=lig_xyz,
-                    lig_roles=lig_roles,
-                    lig_donor_h_xyz_by_name=lig_donor_h_xyz,
+                idxs = np.nonzero((cover & (np.uint16(1 << bit))) != 0)[0]
+                if idxs.size == 0:
+                    targets_without_candidates.append(target)
+                    continue
+
+                # Rank candidates deterministically for this target (higher is better).
+                scored: list[tuple[float, float, int, int]] = []
+                lig_xyz = polar_xyz_by_name[target]
+                lig_roles = polar_by_name[target]
+                for i in idxs:
+                    geom = _score_candidate_for_target(
+                        atom_order=atom_order,
+                        center_xyz_stub=center_stub[i],
+                        xform_world_stub_12=xw12[i],
+                        lig_atom_name=target,
+                        lig_xyz=lig_xyz,
+                        lig_roles=lig_roles,
+                        lig_donor_h_xyz_by_name=lig_donor_h_xyz,
+                    )
+                    scored.append((float(geom), float(score[i]), int(vdm_id[i]), int(i)))
+                scored.sort(key=lambda x: (-x[0], -x[1], x[2], x[3]))
+
+                for rank, (geom, sc, v_id, i) in enumerate(scored[: int(args.top_try_per_atom)], start=1):
+                    cand_i = int(i)
+                    prev = proposal_by_idx.get(cand_i)
+                    if prev is None:
+                        proposal_by_idx[cand_i] = {
+                            "candidate_index": cand_i,
+                            "best_rank": int(rank),
+                            "best_target": str(target),
+                            "geom_score": float(geom),
+                            "score": float(sc),
+                            "vdm_id_u64": int(v_id),
+                            "targets": {str(target)},
+                        }
+                        continue
+
+                    prev["targets"].add(str(target))
+                    better = (int(rank), -float(geom), -float(sc), int(v_id), cand_i) < (
+                        int(prev["best_rank"]),
+                        -float(prev["geom_score"]),
+                        -float(prev["score"]),
+                        int(prev["vdm_id_u64"]),
+                        int(prev["candidate_index"]),
+                    )
+                    if better:
+                        prev["best_rank"] = int(rank)
+                        prev["best_target"] = str(target)
+                        prev["geom_score"] = float(geom)
+                        prev["score"] = float(sc)
+                        prev["vdm_id_u64"] = int(v_id)
+
+            if not proposal_by_idx:
+                report["steps"].append(
+                    {
+                        "status": "no_candidates",
+                        "remaining": list(missing_before),
+                        "targets_without_candidates": list(targets_without_candidates),
+                    }
                 )
-                scored.append((float(geom), float(score[i]), int(vdm_id[i]), int(i)))
-            scored.sort(key=lambda x: (-x[0], -x[1], x[2], x[3]))
+                break
 
-            chosen_idx: int | None = None
-            for geom, sc, v_id, i in scored[: int(args.top_try_per_atom)]:
+            proposals = list(proposal_by_idx.values())
+            proposals.sort(
+                key=lambda p: (
+                    int(p["best_rank"]),
+                    -float(p["geom_score"]),
+                    -float(p["score"]),
+                    int(p["vdm_id_u64"]),
+                    int(p["candidate_index"]),
+                )
+            )
+
+            best_key: tuple[int, int, int, float, float, int, int] | None = None
+            best_payload: dict[str, Any] | None = None
+            n_ligand_clash = 0
+            n_protein_clash = 0
+            n_non_improving = 0
+
+            for p in proposals:
+                i = int(p["candidate_index"])
                 new_resnum = max_resnum_m + 1
                 cand_atoms = _candidate_atoms_world(
                     atom_order=atom_order,
@@ -454,44 +517,98 @@ def main() -> None:
                 )
                 # Quick clash checks vs ligand and existing motif protein.
                 if _clashes(cand_atoms, ligand_atoms, tolerance=float(args.clash_tol), heavy_only=True):
+                    n_ligand_clash += 1
                     continue
                 if _clashes(cand_atoms, protein_atoms, tolerance=float(args.clash_tol), heavy_only=True):
+                    n_protein_clash += 1
                     continue
 
-                # Write a temporary PDB and ask PLIP whether this improves coverage.
+                # Write a temporary PDB and ask PLIP whether this improves global coverage.
                 test_atoms = list(cur_atoms) + cand_atoms
-                # Renumber serials deterministically
                 test_atoms2: list[PdbAtom] = []
                 for srl, a in enumerate(test_atoms, start=1):
                     test_atoms2.append(PdbAtom(**{**a.__dict__, "serial": srl}))
                 _write_text(tmp_pdb, "\n".join(_format_pdb_atom(a) for a in test_atoms2) + "\nEND\n")
 
                 test_val = plip_validate(tmp_pdb)
-                test_missing = list(test_val.get("unsatisfied_polar_atoms") or [])
-                if len(test_missing) < len(missing) and target not in test_missing:
-                    chosen_idx = int(i)
-                    # Accept
-                    cur_atoms = test_atoms2
-                    protein_atoms.extend(cand_atoms)
-                    max_resnum_m = new_resnum
-                    current_res_count += 1
-                    missing = test_missing
-                    report["steps"].append(
-                        {
-                            "target": target,
-                            "chosen_candidate_index": chosen_idx,
-                            "aa3": str(aa3[i]),
-                            "vdm_id_u64": int(v_id),
-                            "score": float(sc),
-                            "geom_score": float(geom),
-                            "remaining_unsatisfied": list(missing),
-                        }
-                    )
-                    break
+                test_missing = sorted(str(x) for x in (test_val.get("unsatisfied_polar_atoms") or []))
+                test_missing_set = set(test_missing)
+                resolved = sorted(missing_before_set - test_missing_set)
+                improvement = len(missing_before) - len(test_missing)
+                if improvement <= 0:
+                    n_non_improving += 1
+                    continue
 
-            if chosen_idx is None:
-                report["steps"].append({"target": target, "status": "no_improving_candidate", "remaining": list(missing)})
+                cand_key = (
+                    -int(improvement),  # maximize missing-count reduction
+                    -len(resolved),  # then maximize newly-resolved targets
+                    int(p["best_rank"]),  # then keep deterministic tie breaks
+                    -float(p["geom_score"]),
+                    -float(p["score"]),
+                    int(p["vdm_id_u64"]),
+                    int(i),
+                )
+                if best_key is None or cand_key < best_key:
+                    best_key = cand_key
+                    best_payload = {
+                        "candidate_index": int(i),
+                        "aa3": str(aa3[i]),
+                        "vdm_id_u64": int(p["vdm_id_u64"]),
+                        "score": float(p["score"]),
+                        "geom_score": float(p["geom_score"]),
+                        "best_target": str(p["best_target"]),
+                        "targets_considered": sorted(str(x) for x in p["targets"]),
+                        "resolved_targets": resolved,
+                        "missing_after": test_missing,
+                        "improvement": int(improvement),
+                        "best_rank": int(p["best_rank"]),
+                        "cand_atoms": cand_atoms,
+                        "test_atoms": test_atoms2,
+                        "new_resnum": int(new_resnum),
+                    }
+
+            if best_payload is None:
+                report["steps"].append(
+                    {
+                        "status": "no_improving_candidate",
+                        "remaining": list(missing_before),
+                        "targets_without_candidates": list(targets_without_candidates),
+                        "n_proposals": int(len(proposals)),
+                        "n_rejected_ligand_clash": int(n_ligand_clash),
+                        "n_rejected_protein_clash": int(n_protein_clash),
+                        "n_rejected_non_improving": int(n_non_improving),
+                    }
+                )
                 break
+
+            # Accept global-best improving candidate for this round.
+            cur_atoms = list(best_payload["test_atoms"])
+            protein_atoms.extend(best_payload["cand_atoms"])
+            max_resnum_m = int(best_payload["new_resnum"])
+            current_res_count += 1
+            missing = list(best_payload["missing_after"])
+            report["steps"].append(
+                {
+                    "status": "accepted",
+                    "missing_before": list(missing_before),
+                    "missing_after": list(missing),
+                    "improvement": int(best_payload["improvement"]),
+                    "resolved_targets": list(best_payload["resolved_targets"]),
+                    "best_target": str(best_payload["best_target"]),
+                    "targets_considered": list(best_payload["targets_considered"]),
+                    "chosen_candidate_index": int(best_payload["candidate_index"]),
+                    "aa3": str(best_payload["aa3"]),
+                    "vdm_id_u64": int(best_payload["vdm_id_u64"]),
+                    "score": float(best_payload["score"]),
+                    "geom_score": float(best_payload["geom_score"]),
+                    "best_rank": int(best_payload["best_rank"]),
+                    "n_proposals": int(len(proposals)),
+                    "targets_without_candidates": list(targets_without_candidates),
+                    "n_rejected_ligand_clash": int(n_ligand_clash),
+                    "n_rejected_protein_clash": int(n_protein_clash),
+                    "n_rejected_non_improving": int(n_non_improving),
+                }
+            )
 
         # Write final
         _write_text(args.out_pdb, "\n".join(_format_pdb_atom(a) for a in cur_atoms) + "\nEND\n")

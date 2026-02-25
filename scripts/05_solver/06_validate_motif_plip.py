@@ -115,15 +115,26 @@ def _read_plip_idx_list(parent: ET.Element, tag: str) -> list[int]:
     return []
 
 
-def _collect_ligand_atom_serials_from_plip(plipfixed_pdb: Path, ligand_key: tuple[str, str, int]) -> dict[int, str]:
+def _collect_ligand_atom_serials_from_plip(plip_ligand_pdb: Path, ligand_key: tuple[str, str, int]) -> dict[int, str]:
     resname, chain, resnum = ligand_key
     out: dict[int, str] = {}
-    for a in _parse_pdb_atoms(plipfixed_pdb):
+    for a in _parse_pdb_atoms(plip_ligand_pdb):
         if a.resname == resname and a.chain == chain and a.resnum == resnum:
             out[a.serial] = a.atom_name
     if not out:
-        raise ValueError(f"PLIP fixed PDB does not contain ligand residue {ligand_key}: {plipfixed_pdb}")
+        raise ValueError(f"PLIP output PDB does not contain ligand residue {ligand_key}: {plip_ligand_pdb}")
     return out
+
+
+def _find_plip_ligand_pdb(outdir: Path) -> Path:
+    # PLIP naming varies by version. Prefer plipfixed when present, else protonated output.
+    patterns = ("plipfixed.*.pdb", "*_protonated.pdb", "*protonated*.pdb")
+    for pat in patterns:
+        matches = sorted(outdir.glob(pat), key=lambda p: p.stat().st_mtime)
+        if matches:
+            return matches[-1]
+    pats = ", ".join(patterns)
+    raise FileNotFoundError(f"Expected at least 1 PLIP output PDB ({pats}) in {outdir}, got 0")
 
 
 def _collect_interacting_ligand_serials(report_xml: Path, ligand_serials: set[int]) -> set[int]:
@@ -208,9 +219,9 @@ def main() -> None:
         # Some PLIP versions rename output based on input basename, keep a robust glob fallback.
         report_xml = _find_latest(outdir, "*_report.xml")
 
-    plipfixed = _find_latest(outdir, "plipfixed.*.pdb")
+    plip_ligand_pdb = _find_plip_ligand_pdb(outdir)
 
-    ligand_serial_to_name = _collect_ligand_atom_serials_from_plip(plipfixed, ligand_key)
+    ligand_serial_to_name = _collect_ligand_atom_serials_from_plip(plip_ligand_pdb, ligand_key)
     interacting_serials = _collect_interacting_ligand_serials(report_xml, set(ligand_serial_to_name.keys()))
 
     satisfied_by_name = {ligand_serial_to_name[i] for i in interacting_serials}
@@ -226,7 +237,7 @@ def main() -> None:
         "n_satisfied": len(satisfied_polar),
         "satisfied_polar_atoms": satisfied_polar,
         "unsatisfied_polar_atoms": unsatisfied_polar,
-        "plip": {"report_xml": str(report_xml), "plipfixed_pdb": str(plipfixed), "outdir": str(outdir)},
+        "plip": {"report_xml": str(report_xml), "plipfixed_pdb": str(plip_ligand_pdb), "outdir": str(outdir)},
     }
     _write_json(args.out, payload)
 
@@ -234,7 +245,7 @@ def main() -> None:
         # Keep only the JSON by default; PLIP output can be large / noisy.
         # Users can re-run with --keep-plip-outdir if they need details.
         for p in outdir.iterdir():
-            if p == report_xml or p == plipfixed:
+            if p == report_xml or p == plip_ligand_pdb:
                 continue
             # leave report_xml + plipfixed for minimal debugging
             try:
