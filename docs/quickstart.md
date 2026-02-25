@@ -144,8 +144,8 @@ uv run -p 3.11 python scripts/99_harness/01_mtx_determinism_regression.py \
 
 This runs a small parameter sweep over candidate scoring (`score_w_*`) and solver pocket-size controls
 (`target_res`, `min_cover_per_polar`), then writes:
-- `processed/99_harness/mtx_pocket_quality_sweep_<tag>/summary.json`
-- `processed/99_harness/mtx_pocket_quality_sweep_<tag>/summary.md`
+- `processed/99_harness/<ligand_tag>_pocket_quality_sweep_<tag>/summary.json`
+- `processed/99_harness/<ligand_tag>_pocket_quality_sweep_<tag>/summary.md`
 
 By default, `--run-plip` is an optional audit signal in this sweep: PLIP failures are recorded as `plip_error`
 and `plip_*` metrics may be `null`, but core feasibility still follows sat + ligand clash + internal clash.
@@ -160,6 +160,28 @@ Strict PLIP gate (recommended after PLIP runtime is healthy):
 ```bash
 REQUIRE_PLIP_SUCCESS=1 PLIP_BIN="$(command -v plip)" MAX_RUNS=4 \
   bash scripts/99_harness/05_run_mtx_pocket_quality_sweep.sh
+```
+
+Run the same sweep on a non-MTX ligand by setting `LIGAND_TAG` and `LIGAND_RESNAME`:
+
+```bash
+LIGAND_TAG=PAB LIGAND_RESNAME=PAB \
+LIGAND_PDB=processed/99_harness/non_mtx_transfer_benchmark_<tag>/PAB/PAB.pdb \
+POLAR_SITES=processed/99_harness/non_mtx_transfer_benchmark_<tag>/PAB/PAB_polar_sites.json \
+SITE_FRAMES=processed/99_harness/non_mtx_transfer_benchmark_<tag>/PAB/PAB_site_frames.json \
+MAX_RUNS=4 bash scripts/99_harness/05_run_mtx_pocket_quality_sweep.sh
+```
+
+### 6c) Non-MTX transfer benchmark (auto-prep + sweep)
+
+This harness generates ligand PDBs from SMILES, builds `cg_atommap` + polar sites + site frames,
+runs strict sweep on each ligand, then aggregates cross-ligand parameter performance:
+- `processed/99_harness/non_mtx_transfer_benchmark_<tag>/summary.json`
+- `processed/99_harness/non_mtx_transfer_benchmark_<tag>/summary.md`
+
+```bash
+RUN_PLIP=1 REQUIRE_PLIP_SUCCESS=1 MAX_RUNS=8 \
+  bash scripts/99_harness/06_run_non_mtx_transfer_benchmark.sh
 ```
 
 ### 7) Interaction validation (PLIP) — do not skip

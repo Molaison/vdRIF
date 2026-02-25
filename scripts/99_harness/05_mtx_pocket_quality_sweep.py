@@ -45,6 +45,11 @@ def _safe_num(v: float | int) -> str:
     return f"{float(v):g}".replace("-", "m").replace(".", "p")
 
 
+def _safe_token(v: str) -> str:
+    t = "".join(ch if ch.isalnum() else "_" for ch in v.strip())
+    return t or "MTX"
+
+
 def _read_json_if_exists(path: Path) -> dict[str, Any] | None:
     if not path.exists():
         return None
@@ -58,13 +63,15 @@ def _py_cmd(python_bin: Path, script: Path, *args: str) -> list[str]:
 def main() -> None:
     ap = argparse.ArgumentParser(
         description=(
-            "Sweep MTX pocket-quality knobs for candidate generation and solver, "
+            "Sweep pocket-quality knobs for candidate generation and solver, "
             "then summarize feasibility/quality/runtime."
         )
     )
     ap.add_argument("--repo-root", type=Path, default=Path("."))
     ap.add_argument("--tag", type=str, default=str(int(time.time())))
     ap.add_argument("--python-bin", type=Path, default=None, help="Python interpreter used to run pipeline scripts.")
+    ap.add_argument("--ligand-tag", type=str, default="MTX", help="Prefix token for output filenames and outdir names.")
+    ap.add_argument("--ligand-resname", type=str, default="MTX", help="Residue name used for clash validators.")
     ap.add_argument("--ligand-pdb", type=Path, default=Path("inputs/01_cgmap/MTX.pdb"))
     ap.add_argument("--polar-sites", type=Path, default=Path("outputs/02_polar_sites/MTX_polar_sites.json"))
     ap.add_argument("--site-frames", type=Path, default=Path("outputs/02_polar_sites/MTX_site_frames.json"))
@@ -114,7 +121,9 @@ def main() -> None:
     py_bin_dir = str(python_bin.parent.resolve())
     run_env["PATH"] = py_bin_dir + os.pathsep + run_env.get("PATH", "")
 
-    outdir = root / "processed/99_harness" / f"mtx_pocket_quality_sweep_{args.tag}"
+    ligand_tag = _safe_token(str(args.ligand_tag))
+    ligand_resname = str(args.ligand_resname).strip() or "MTX"
+    outdir = root / "processed/99_harness" / f"{ligand_tag.lower()}_pocket_quality_sweep_{args.tag}"
     runs_dir = outdir / "runs"
     runs_dir.mkdir(parents=True, exist_ok=True)
 
@@ -128,9 +137,9 @@ def main() -> None:
             vdx / cg / f"vdxform_{cg}.npz",
             hint_cmd="bash scripts/03_vdxform/02_run_mtx_needed_cgs.sh (full) or 03_run_mtx_needed_cgs_debug.sh (debug)",
         )
-    _ensure_file(ligand, hint_cmd="Place MTX at inputs/01_cgmap/MTX.pdb")
-    _ensure_file(polar, hint_cmd="bash scripts/02_polar_sites/01_run_mtx_polar_sites.sh")
-    _ensure_file(frames, hint_cmd="bash scripts/02_polar_sites/01_run_mtx_polar_sites.sh")
+    _ensure_file(ligand, hint_cmd="Provide --ligand-pdb, e.g. inputs/01_cgmap/<LIG>.pdb")
+    _ensure_file(polar, hint_cmd="Provide --polar-sites, e.g. outputs/02_polar_sites/<LIG>_polar_sites.json")
+    _ensure_file(frames, hint_cmd="Provide --site-frames, e.g. outputs/02_polar_sites/<LIG>_site_frames.json")
 
     candidate_py = root / "scripts/04_candidates/01_generate_candidates.py"
     solver_py = root / "scripts/05_solver/01_solve_motif.py"
@@ -166,13 +175,13 @@ def main() -> None:
         run_dir.mkdir(parents=True, exist_ok=True)
         log_path = run_dir / "pipeline.log"
 
-        cand_prefix = run_dir / "MTX_candidates"
-        motif_json = run_dir / "MTX_motif.json"
-        motif_pdb = run_dir / "MTX_motif.pdb"
-        motif_val_json = run_dir / "MTX_motif_validation.json"
-        motif_clash_json = run_dir / "MTX_motif_clash_validation.json"
-        motif_internal_clash_json = run_dir / "MTX_motif_internal_clash_validation.json"
-        motif_plip_json = run_dir / "MTX_motif_plip_validation.json"
+        cand_prefix = run_dir / f"{ligand_tag}_candidates"
+        motif_json = run_dir / f"{ligand_tag}_motif.json"
+        motif_pdb = run_dir / f"{ligand_tag}_motif.pdb"
+        motif_val_json = run_dir / f"{ligand_tag}_motif_validation.json"
+        motif_clash_json = run_dir / f"{ligand_tag}_motif_clash_validation.json"
+        motif_internal_clash_json = run_dir / f"{ligand_tag}_motif_internal_clash_validation.json"
+        motif_plip_json = run_dir / f"{ligand_tag}_motif_plip_validation.json"
 
         run_record: dict[str, Any] = {
             "run_id": run_id,
@@ -320,6 +329,8 @@ def main() -> None:
                     str(polar),
                     "--motif-pdb",
                     str(motif_pdb),
+                    "--ligand-resname",
+                    str(ligand_resname),
                     "--acceptor-model",
                     str(args.acceptor_model),
                     "-o",
@@ -337,7 +348,7 @@ def main() -> None:
                     "--motif-pdb",
                     str(motif_pdb),
                     "--ligand-resname",
-                    "MTX",
+                    str(ligand_resname),
                     "-o",
                     str(motif_clash_json),
                     "--tol",
@@ -357,7 +368,7 @@ def main() -> None:
                     "--motif-pdb",
                     str(motif_pdb),
                     "--ligand-resname",
-                    "MTX",
+                    str(ligand_resname),
                     "-o",
                     str(motif_internal_clash_json),
                     "--tol",
@@ -486,6 +497,8 @@ def main() -> None:
         "tag": args.tag,
         "outdir": str(outdir),
         "inputs": {
+            "ligand_tag": str(ligand_tag),
+            "ligand_resname": str(ligand_resname),
             "ligand_pdb": str(ligand),
             "polar_sites": str(polar),
             "site_frames": str(frames),
@@ -508,7 +521,7 @@ def main() -> None:
     (outdir / "summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
     md_lines = [
-        f"# MTX Pocket Quality Sweep ({args.tag})",
+        f"# {ligand_tag} Pocket Quality Sweep ({args.tag})",
         "",
         f"- outdir: `{outdir}`",
         f"- recommended: `{summary['recommended_run_id']}` (feasible={summary['recommended_feasible']})",

@@ -39,6 +39,7 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="Validate that each ligand polar atom has a nearby complementary motif atom.")
     ap.add_argument("--polar-sites", type=Path, required=True)
     ap.add_argument("--motif-pdb", type=Path, required=True)
+    ap.add_argument("--ligand-resname", type=str, default="MTX", help="Ligand residue name in motif PDB.")
     ap.add_argument("-o", "--out", type=Path, required=True)
     ap.add_argument("--hbond-dist", type=float, default=3.5, help="Heavy-atom distance cutoff for Hbond-like satisfaction.")
     ap.add_argument("--ion-dist", type=float, default=4.0, help="Distance cutoff for ionic satisfaction.")
@@ -58,9 +59,9 @@ def main() -> None:
     polar = _load_json(args.polar_sites)
     atoms = _parse_pdb_atoms(args.motif_pdb)
 
-    # Separate ligand atoms (chain/resseq from MTX input; we identify by residue name MTX)
-    ligand_atoms = {a["name"]: a for a in atoms if a["resn"] == "MTX"}
-    motif_atoms = [a for a in atoms if a["resn"] != "MTX"]
+    ligand_resname = str(args.ligand_resname).strip() or "MTX"
+    ligand_atoms = {a["name"]: a for a in atoms if a["resn"] == ligand_resname}
+    motif_atoms = [a for a in atoms if a["resn"] != ligand_resname]
 
     # Very simple atom typing for motif residues (heavy atoms only).
     donor_atoms = {"N", "NE", "NE1", "NE2", "NH1", "NH2", "NZ", "ND1", "ND2", "OG", "OG1", "OH"}
@@ -148,7 +149,11 @@ def main() -> None:
     _write_json(
         args.out,
         {
-            "inputs": {"polar_sites": str(args.polar_sites), "motif_pdb": str(args.motif_pdb)},
+            "inputs": {
+                "polar_sites": str(args.polar_sites),
+                "motif_pdb": str(args.motif_pdb),
+                "ligand_resname": str(ligand_resname),
+            },
             "params": {"hbond_dist": float(args.hbond_dist), "ion_dist": float(args.ion_dist)},
             "all_satisfied": bool(ok_all),
             "results": results,
