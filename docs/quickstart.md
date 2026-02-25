@@ -155,6 +155,13 @@ Add `--require-plip-success` to make PLIP success a hard feasibility gate.
 MAX_RUNS=4 bash scripts/99_harness/05_run_mtx_pocket_quality_sweep.sh
 ```
 
+Strict PLIP gate (recommended after PLIP runtime is healthy):
+
+```bash
+REQUIRE_PLIP_SUCCESS=1 PLIP_BIN="$(command -v plip)" MAX_RUNS=4 \
+  bash scripts/99_harness/05_run_mtx_pocket_quality_sweep.sh
+```
+
 ### 7) Interaction validation (PLIP) — do not skip
 
 Run PLIP on the generated motif PDB and check that every polar atom is contacted by at least one PLIP interaction:

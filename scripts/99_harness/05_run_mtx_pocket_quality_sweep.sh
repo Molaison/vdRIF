@@ -17,6 +17,8 @@ TOP_PER_SITE_PER_ATOM="${TOP_PER_SITE_PER_ATOM:-40}"
 TIME_LIMIT_S="${TIME_LIMIT_S:-120}"
 CA_PREFILTER="${CA_PREFILTER:-14.0}"
 MAX_RUNS="${MAX_RUNS:-4}"
+REQUIRE_PLIP_SUCCESS="${REQUIRE_PLIP_SUCCESS:-0}"
+PLIP_BIN="${PLIP_BIN:-$(command -v plip 2>/dev/null || echo plip)}"
 
 SCORE_W_COVERAGE_LIST="${SCORE_W_COVERAGE_LIST:-0.03,0.05}"
 SCORE_W_CONTACT_LIST="${SCORE_W_CONTACT_LIST:-0.1,0.2}"
@@ -37,8 +39,15 @@ mkdir -p "$(dirname "$LOG")"
   echo "[run] site_frames: $SITE_FRAMES"
   echo "[run] vdxform_dir: $VDXFORM_DIR"
   echo "[run] solver=$SOLVER top_per_site=$TOP_PER_SITE top_per_site_per_atom=$TOP_PER_SITE_PER_ATOM time_limit_s=$TIME_LIMIT_S ca_prefilter=$CA_PREFILTER max_runs=$MAX_RUNS"
+  echo "[run] plip_bin=$PLIP_BIN require_plip_success=$REQUIRE_PLIP_SUCCESS"
   echo "[run] score_w_coverage_list=$SCORE_W_COVERAGE_LIST score_w_contact_list=$SCORE_W_CONTACT_LIST score_w_shell_list=$SCORE_W_SHELL_LIST"
   echo "[run] target_res_list=$TARGET_RES_LIST min_cover_per_polar_list=$MIN_COVER_PER_POLAR_LIST"
+
+  EXTRA_FLAGS=()
+  if [[ "$REQUIRE_PLIP_SUCCESS" == "1" ]]; then
+    EXTRA_FLAGS+=(--require-plip-success)
+  fi
+
   "$PYTHON_BIN" "$ROOT/scripts/99_harness/05_mtx_pocket_quality_sweep.py" \
     --repo-root "$ROOT" \
     --tag "$TAG" \
@@ -57,6 +66,8 @@ mkdir -p "$(dirname "$LOG")"
     --score-w-shell-list "$SCORE_W_SHELL_LIST" \
     --target-res-list "$TARGET_RES_LIST" \
     --min-cover-per-polar-list "$MIN_COVER_PER_POLAR_LIST" \
+    --plip-bin "$PLIP_BIN" \
     --run-plip \
-    --max-runs "$MAX_RUNS"
+    --max-runs "$MAX_RUNS" \
+    "${EXTRA_FLAGS[@]}"
 } 2>&1 | tee "$LOG"

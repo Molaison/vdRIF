@@ -91,6 +91,12 @@ def main() -> None:
     ap.add_argument("--min-sidechain-centroid-dot", type=float, default=0.0)
     ap.add_argument("--run-plip", action="store_true")
     ap.add_argument("--require-plip-success", action="store_true")
+    ap.add_argument(
+        "--plip-bin",
+        type=str,
+        default="plip",
+        help="PLIP executable path/name passed to validate_motif_plip.py.",
+    )
     ap.add_argument("--max-runs", type=int, default=0, help="If >0, run only first N combinations.")
     ap.add_argument("--stop-on-error", action="store_true")
     args = ap.parse_args()
@@ -188,6 +194,7 @@ def main() -> None:
                 "ca_prefilter": float(args.ca_prefilter),
                 "acceptor_model": str(args.acceptor_model),
                 "run_plip": bool(args.run_plip),
+                "plip_bin": str(args.plip_bin),
             },
             "paths": {
                 "run_dir": str(run_dir),
@@ -377,6 +384,8 @@ def main() -> None:
                             str(motif_plip_json),
                             "--timeout-s",
                             "180",
+                            "--plip-bin",
+                            str(args.plip_bin),
                         ),
                         cwd=root,
                         log_path=log_path,

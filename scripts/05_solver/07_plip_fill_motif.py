@@ -305,6 +305,7 @@ def main() -> None:
     ap.add_argument("--max-res", type=int, default=15)
     ap.add_argument("--clash-tol", type=float, default=0.5)
     ap.add_argument("--top-try-per-atom", type=int, default=80)
+    ap.add_argument("--plip-bin", type=str, default="plip", help="PLIP executable path/name.")
     args = ap.parse_args()
 
     polar = _read_json(args.polar_sites)
@@ -386,6 +387,8 @@ def main() -> None:
                 "1",
                 "--timeout-s",
                 "120",
+                "--plip-bin",
+                str(args.plip_bin),
             ]
             _plip_validate_main()
         finally:
