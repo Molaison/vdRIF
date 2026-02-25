@@ -294,6 +294,55 @@ def _clash_mask_full_fast(
     return ~clash
 
 
+def _sidechain_contact_features(
+    residue_atoms_xyz: np.ndarray,  # (n,k,3)
+    sidechain_idx: list[int],
+    ligand_xyz: np.ndarray,  # (m,3)
+    min_contact_dist: float,
+    max_contact_dist: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Compute sidechain-ligand contact features per candidate.
+
+    Returns:
+    - contact_count: number of sidechain atoms whose nearest ligand distance is
+      within [min_contact_dist, max_contact_dist].
+    - min_sidechain_ligand_dist: nearest sidechain-heavy-atom distance to ligand.
+    """
+    n = int(residue_atoms_xyz.shape[0])
+    if n == 0:
+        return np.zeros((0,), dtype=np.int16), np.zeros((0,), dtype=np.float32)
+    if not sidechain_idx:
+        return np.zeros((n,), dtype=np.int16), np.full((n,), np.float32(np.inf), dtype=np.float32)
+
+    if float(min_contact_dist) < 0:
+        raise ValueError(f"min_contact_dist must be >= 0, got {min_contact_dist}")
+    if float(max_contact_dist) <= float(min_contact_dist):
+        raise ValueError(
+            f"max_contact_dist must be > min_contact_dist, got min={min_contact_dist} max={max_contact_dist}"
+        )
+
+    sc_xyz = residue_atoms_xyz[:, sidechain_idx, :].astype(np.float64)  # (n,s,3)
+    lig = ligand_xyz.astype(np.float64)  # (m,3)
+
+    d = sc_xyz[:, :, None, :] - lig[None, None, :, :]
+    d2 = np.einsum("nsmj,nsmj->nsm", d, d)
+    d2 = np.where(np.isfinite(d2), d2, float("inf"))
+
+    min_d2_per_atom = d2.min(axis=2)  # (n,s)
+    min_contact2 = float(min_contact_dist) ** 2
+    max_contact2 = float(max_contact_dist) ** 2
+
+    in_window = (min_d2_per_atom >= min_contact2) & (min_d2_per_atom <= max_contact2)
+    contact_count = in_window.sum(axis=1).astype(np.int16)
+
+    min_d2 = min_d2_per_atom.min(axis=1)
+    min_dist = np.sqrt(min_d2, dtype=np.float64)
+    min_dist = np.where(np.isfinite(min_dist), min_dist, float("inf")).astype(np.float32)
+
+    return contact_count, min_dist
+
+
 @dataclass(frozen=True)
 class Site:
     site_index: int
@@ -435,8 +484,53 @@ def main() -> None:
         default=0.0,
         help="Minimum dot( sidechain_dir , direction-to-ligand-centroid ) to accept a candidate (default 0.0).",
     )
+    ap.add_argument(
+        "--min-sidechain-contact-dist",
+        type=float,
+        default=2.8,
+        help=(
+            "Lower distance bound (Angstrom) for counting sidechain-ligand contacts. "
+            "Used with --max-sidechain-contact-dist."
+        ),
+    )
+    ap.add_argument(
+        "--max-sidechain-contact-dist",
+        type=float,
+        default=4.8,
+        help=(
+            "Upper distance bound (Angstrom) for counting sidechain-ligand contacts. "
+            "Used with --min-sidechain-contact-dist."
+        ),
+    )
+    ap.add_argument(
+        "--min-sidechain-contact-count",
+        type=int,
+        default=0,
+        help=(
+            "Require at least this many sidechain atoms to be in the contact-distance window "
+            "to keep a candidate. 0 disables this hard filter."
+        ),
+    )
+    ap.add_argument(
+        "--sidechain-contact-weight",
+        type=float,
+        default=0.0,
+        help=(
+            "Score bonus weight multiplied by sidechain contact count. "
+            "Use >0 to prefer candidates that geometrically wrap the ligand pocket."
+        ),
+    )
     ap.add_argument("--require-full-coverage", action="store_true")
     args = ap.parse_args()
+    if int(args.min_sidechain_contact_count) < 0:
+        raise ValueError(
+            f"--min-sidechain-contact-count must be >= 0, got {args.min_sidechain_contact_count}"
+        )
+    if float(args.max_sidechain_contact_dist) <= float(args.min_sidechain_contact_dist):
+        raise ValueError(
+            "--max-sidechain-contact-dist must be > --min-sidechain-contact-dist, "
+            f"got min={args.min_sidechain_contact_dist} max={args.max_sidechain_contact_dist}"
+        )
 
     polar = _load_json(args.polar_sites)
     polar_atoms = [s["atom_name"] for s in polar["sites"]]
@@ -888,6 +982,28 @@ def main() -> None:
                 pass_cov = pass_cov[mask_face]
                 pass_idx = pass_idx[mask_face]
 
+            # Pocket quality signal:
+            # Count sidechain atoms that sit in a plausible contact shell to the ligand.
+            # This avoids selecting "technically satisfying but spatially detached" placements.
+            contact_count, min_sc_lig_dist = _sidechain_contact_features(
+                world_all,
+                sidechain_idx=sidechain_idx,
+                ligand_xyz=lig_xyz,
+                min_contact_dist=float(args.min_sidechain_contact_dist),
+                max_contact_dist=float(args.max_sidechain_contact_dist),
+            )
+            min_contact_count = int(args.min_sidechain_contact_count)
+            if min_contact_count > 0:
+                ok_contacts = contact_count >= min_contact_count
+                if not np.any(ok_contacts):
+                    continue
+                world_all = world_all[ok_contacts]
+                pass_local = pass_local[ok_contacts]
+                pass_cov = pass_cov[ok_contacts]
+                pass_idx = pass_idx[ok_contacts]
+                contact_count = contact_count[ok_contacts]
+                min_sc_lig_dist = min_sc_lig_dist[ok_contacts]
+
             ok_full = _clash_mask_full_fast(
                 world_all,
                 atom_order_vdw,
@@ -901,10 +1017,22 @@ def main() -> None:
             pass_local = pass_local[ok_full]
             pass_cov = pass_cov[ok_full]
             pass_idx = pass_idx[ok_full]
+            pass_contact_count = contact_count[ok_full]
+            pass_min_sc_lig_dist = min_sc_lig_dist[ok_full]
 
             # Finally, score and keep top-k for this site.
-            for idx, cov in zip(pass_idx.tolist(), pass_cov.tolist(), strict=True):
-                sc = float(prior[idx]) + 1e-3 * int(cov).bit_count()
+            for idx, cov, n_contacts, _min_sc_dist in zip(
+                pass_idx.tolist(),
+                pass_cov.tolist(),
+                pass_contact_count.tolist(),
+                pass_min_sc_lig_dist.tolist(),
+                strict=True,
+            ):
+                sc = (
+                    float(prior[idx])
+                    + 1e-3 * int(cov).bit_count()
+                    + float(args.sidechain_contact_weight) * float(n_contacts)
+                )
                 maybe_add(int(idx), sc, int(cov))
 
         # Emit this site's kept candidates
@@ -1011,6 +1139,10 @@ def main() -> None:
             "chunk_size": int(args.chunk_size),
             "top_per_site": int(args.top_per_site),
             "clash_tol": float(args.clash_tol),
+            "min_sidechain_contact_dist": float(args.min_sidechain_contact_dist),
+            "max_sidechain_contact_dist": float(args.max_sidechain_contact_dist),
+            "min_sidechain_contact_count": int(args.min_sidechain_contact_count),
+            "sidechain_contact_weight": float(args.sidechain_contact_weight),
         },
         "ligand": {"n_heavy_atoms": int(lig_xyz.shape[0]), "heavy_atom_names": lig_names},
         "ligand_donor_h_source": str(lig_donor_h_source),

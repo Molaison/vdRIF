@@ -99,7 +99,10 @@ Outputs:
 Non-debug run (expected to be heavier; intended for `dg`):
 
 ```bash
-TOP_PER_SITE=2000 bash scripts/04_candidates/02_run_mtx_candidates.sh
+TOP_PER_SITE=2000 \
+MIN_SC_CONTACT_COUNT=1 \
+SC_CONTACT_WEIGHT=0.05 \
+bash scripts/04_candidates/02_run_mtx_candidates.sh
 ```
 
 ### 5) Solve deterministic 8–15 residue motif (MVP)
@@ -265,6 +268,7 @@ Root causes we hit:
 What to do:
 - Use the full libraries under `processed/03_vdxform_full/` when evaluating feasibility.
 - Increase `--top-per-site` and consider `--top-per-site-per-atom` to avoid rare bits getting pruned by a shared heap.
+- If pocket geometry looks loose, tighten sidechain pocket-contact gates: increase `MIN_SC_CONTACT_COUNT` (e.g. `1 -> 2`) and/or `SC_CONTACT_WEIGHT` (e.g. `0.05 -> 0.15`).
 
 ### D) vdM semantics confusion: which residue should become the “motif residue”?
 

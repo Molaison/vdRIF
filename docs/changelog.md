@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-02-25
+
+- Improved vdM candidate quality for incomplete/loose pockets by adding sidechain-ligand pocket-contact features in `scripts/04_candidates/01_generate_candidates.py`.
+- Added tunable knobs for pocket-contact gating and scoring: `--min-sidechain-contact-dist`, `--max-sidechain-contact-dist`, `--min-sidechain-contact-count`, and `--sidechain-contact-weight`.
+- Wired the new knobs into production/debug runners:
+  - `scripts/04_candidates/01_run_mtx_candidates_debug.sh`
+  - `scripts/04_candidates/02_run_mtx_candidates.sh`
+- Updated determinism harness to cover the new pocket-contact controls: `scripts/99_harness/01_mtx_determinism_regression.py`.
+- Documented the pocket-contact tuning path in `docs/quickstart.md`.
+
 ## 2026-02-02
 
 - Extended symmetric ligand site-frame handling beyond `coo` to aromatic `ph`/`phenol` (`CD1/CD2` swap frames) in `scripts/02_polar_sites/03_build_ligand_site_frames.py`.

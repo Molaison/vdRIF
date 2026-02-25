@@ -46,6 +46,10 @@ def main() -> None:
     ap.add_argument("--repo-root", type=Path, default=Path("."))
     ap.add_argument("--tag", type=str, default=str(int(time.time())))
     ap.add_argument("--top-per-site", type=int, default=200)
+    ap.add_argument("--min-sidechain-contact-dist", type=float, default=2.8)
+    ap.add_argument("--max-sidechain-contact-dist", type=float, default=4.8)
+    ap.add_argument("--min-sidechain-contact-count", type=int, default=1)
+    ap.add_argument("--sidechain-contact-weight", type=float, default=0.05)
     ap.add_argument("--time-limit-s", type=float, default=30.0)
     ap.add_argument(
         "--solver",
@@ -69,6 +73,15 @@ def main() -> None:
         ),
     )
     args = ap.parse_args()
+    if float(args.max_sidechain_contact_dist) <= float(args.min_sidechain_contact_dist):
+        raise ValueError(
+            "--max-sidechain-contact-dist must be > --min-sidechain-contact-dist, "
+            f"got min={args.min_sidechain_contact_dist} max={args.max_sidechain_contact_dist}"
+        )
+    if int(args.min_sidechain_contact_count) < 0:
+        raise ValueError(
+            f"--min-sidechain-contact-count must be >= 0, got {args.min_sidechain_contact_count}"
+        )
 
     root = args.repo_root.resolve()
     outdir = root / "processed/99_harness" / f"mtx_det_{args.tag}"
@@ -137,6 +150,14 @@ def main() -> None:
                 "0.2",
                 "--min-sidechain-centroid-dot",
                 "0.0",
+                "--min-sidechain-contact-dist",
+                str(args.min_sidechain_contact_dist),
+                "--max-sidechain-contact-dist",
+                str(args.max_sidechain_contact_dist),
+                "--min-sidechain-contact-count",
+                str(args.min_sidechain_contact_count),
+                "--sidechain-contact-weight",
+                str(args.sidechain_contact_weight),
                 "--require-full-coverage",
             ]
         )
@@ -284,7 +305,14 @@ def main() -> None:
 
     report: dict[str, Any] = {
         "tag": args.tag,
-        "params": {"top_per_site": args.top_per_site, "time_limit_s": args.time_limit_s},
+        "params": {
+            "top_per_site": args.top_per_site,
+            "time_limit_s": args.time_limit_s,
+            "min_sidechain_contact_dist": args.min_sidechain_contact_dist,
+            "max_sidechain_contact_dist": args.max_sidechain_contact_dist,
+            "min_sidechain_contact_count": args.min_sidechain_contact_count,
+            "sidechain_contact_weight": args.sidechain_contact_weight,
+        },
         "stats": {"A": statsA, "B": statsB},
         "checks": checks,
         "deterministic": bool(ok),
