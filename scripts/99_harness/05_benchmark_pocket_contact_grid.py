@@ -87,7 +87,7 @@ def main() -> None:
         default="",
         help="Optional CSV int list to sweep top_per_site. If empty, uses --top-per-site only.",
     )
-    ap.add_argument("--top-per-site-per-atom", type=int, default=50)
+    ap.add_argument("--top-per-site-per-atom", type=int, default=200)
     ap.add_argument("--chunk-size", type=int, default=5000)
     ap.add_argument("--time-limit-s", type=float, default=120.0)
     ap.add_argument("--clash-tol", type=float, default=0.5)
