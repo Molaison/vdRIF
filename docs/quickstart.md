@@ -174,19 +174,14 @@ python scripts/99_harness/05_benchmark_pocket_contact_grid.py \
   --data-root /xcfhome/zpzeng/project_run_log/spur_of_moment/001_molten_rifdock_vdm \
   --vdxform-dir processed/03_vdxform_full \
   --solver greedy \
-  --top-per-site 200 \
-  --top-per-site-per-atom 50 \
+  --top-per-site-list 200,1000 \
+  --top-per-site-per-atom 200 \
   --min-sidechain-contact-count-list 1,2 \
   --sidechain-contact-weight-list 0.05,0.10,0.15 \
-  --tag pocket_contact_grid_YYYYMMDD
-```
-
-If baseline PLIP is incomplete and you want automatic post-solver rescue attempts, add:
-
-```bash
   --enable-plip-fill \
   --plip-fill-max-res 15 \
-  --plip-fill-top-try-per-atom 120
+  --plip-fill-top-try-per-atom 120 \
+  --tag pocket_contact_grid_YYYYMMDD
 ```
 
 The harness will keep and report pre/post PLIP metrics (`n_satisfied_plip_pre_fill` vs `n_satisfied_plip`) and use post-fill outputs for final scoring only when they do not regress.

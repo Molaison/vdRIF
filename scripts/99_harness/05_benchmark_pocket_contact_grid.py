@@ -81,6 +81,12 @@ def main() -> None:
 
     ap.add_argument("--solver", type=str, default="greedy", choices=["cp_sat", "greedy"])
     ap.add_argument("--top-per-site", type=int, default=200)
+    ap.add_argument(
+        "--top-per-site-list",
+        type=str,
+        default="",
+        help="Optional CSV int list to sweep top_per_site. If empty, uses --top-per-site only.",
+    )
     ap.add_argument("--top-per-site-per-atom", type=int, default=50)
     ap.add_argument("--chunk-size", type=int, default=5000)
     ap.add_argument("--time-limit-s", type=float, default=120.0)
@@ -162,15 +168,21 @@ def main() -> None:
     min_contact_counts = _parse_int_list(args.min_sidechain_contact_count_list)
     contact_weights = _parse_float_list(args.sidechain_contact_weight_list)
 
-    combos = list(itertools.product(min_contact_counts, contact_weights))
+    top_per_site_list = (
+        _parse_int_list(args.top_per_site_list) if str(args.top_per_site_list).strip() else [int(args.top_per_site)]
+    )
+    combos = list(itertools.product(top_per_site_list, min_contact_counts, contact_weights))
     if int(args.max_runs) > 0:
         combos = combos[: int(args.max_runs)]
     if not combos:
         raise ValueError("No parameter combinations to run.")
 
     runs: list[dict[str, Any]] = []
-    for i, (min_sc_contacts, sc_weight) in enumerate(combos, start=1):
-        run_id = f"run_{i:02d}_cnt{_safe_num(min_sc_contacts)}_w{_safe_num(sc_weight)}"
+    for i, (top_per_site_run, min_sc_contacts, sc_weight) in enumerate(combos, start=1):
+        run_id = (
+            f"run_{i:02d}_top{_safe_num(top_per_site_run)}_"
+            f"cnt{_safe_num(min_sc_contacts)}_w{_safe_num(sc_weight)}"
+        )
         run_dir = runs_dir / run_id
         run_dir.mkdir(parents=True, exist_ok=True)
 
@@ -204,7 +216,7 @@ def main() -> None:
                 "min_sidechain_contact_dist": float(args.min_sidechain_contact_dist),
                 "max_sidechain_contact_dist": float(args.max_sidechain_contact_dist),
                 "acceptor_model": str(args.acceptor_model),
-                "top_per_site": int(args.top_per_site),
+                "top_per_site": int(top_per_site_run),
                 "top_per_site_per_atom": int(args.top_per_site_per_atom),
                 "chunk_size": int(args.chunk_size),
                 "solver": str(args.solver),
@@ -253,7 +265,7 @@ def main() -> None:
                     "--chunk-size",
                     str(int(args.chunk_size)),
                     "--top-per-site",
-                    str(int(args.top_per_site)),
+                    str(int(top_per_site_run)),
                     "--top-per-site-per-atom",
                     str(int(args.top_per_site_per_atom)),
                     "--acceptor-model",
@@ -605,6 +617,7 @@ def main() -> None:
             "vdxform_dir": str(vdx),
         },
         "sweep": {
+            "top_per_site_list": top_per_site_list,
             "min_sidechain_contact_count_list": min_contact_counts,
             "sidechain_contact_weight_list": contact_weights,
             "enable_plip_fill": bool(args.enable_plip_fill),
@@ -631,8 +644,8 @@ def main() -> None:
         f"- recommended: `{summary['recommended_run_id']}` (feasible={summary['recommended_feasible']})",
         f"- plip all-satisfied rate: {summary['aggregate']['plip_all_satisfied_rate']:.3f} ({summary['aggregate']['plip_all_satisfied_count']}/{len(runs)})",
         "",
-        "| run_id | feasible | cnt | weight | n_candidates | n_selected | simple_sat | plip_sat | clash_ok | internal_ok | total_s |",
-        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+        "| run_id | feasible | top | cnt | weight | n_candidates | n_selected | simple_sat | plip_sat | clash_ok | internal_ok | total_s |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for r in runs_sorted:
         m = r.get("metrics", {})
@@ -640,7 +653,7 @@ def main() -> None:
         p = r.get("params", {})
         md_lines.append(
             "| "
-            + f"{r.get('run_id')} | {int(bool(r.get('feasible')))} | {p.get('min_sidechain_contact_count')} | "
+            + f"{r.get('run_id')} | {int(bool(r.get('feasible')))} | {p.get('top_per_site')} | {p.get('min_sidechain_contact_count')} | "
             + f"{float(p.get('sidechain_contact_weight', 0.0)):.2f} | {m.get('n_candidates', 0)} | {m.get('n_selected')} | "
             + f"{int(bool(m.get('all_satisfied_simple')))} | {int(bool(m.get('all_satisfied_plip')))} | "
             + f"{int(bool(m.get('ligand_clash_ok')))} | {int(bool(m.get('internal_clash_ok')))} | "

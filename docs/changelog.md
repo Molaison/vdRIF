@@ -15,6 +15,13 @@
   - `scripts/05_solver/07_plip_fill_motif.py` now picks a global best-improvement move per round (no early stop on one unsatisfiable atom).
   - `scripts/99_harness/05_benchmark_pocket_contact_grid.py` now supports `--enable-plip-fill` and reports pre/post PLIP metrics.
 - Smoke evidence (`pocket_contact_grid_plipfill_smoke_20260225`): PLIP satisfied count improved `6 -> 7` (`N` recovered), remaining unsatisfied atoms `N5/O`; clash checks remained clean.
+- Extended PLIP rescue candidate ranking in `scripts/05_solver/07_plip_fill_motif.py`:
+  - added ionic role scoring (`cation`/`anion`);
+  - added optional global fallback candidate search (`--global-fallback-top`) when bit-restricted search stalls.
+- Extended pocket-contact harness sweep dimensions in `scripts/99_harness/05_benchmark_pocket_contact_grid.py`:
+  - added `--top-per-site-list` (CSV) to sweep search budgets in one run;
+  - markdown/json summaries now include `top_per_site` per run.
+- New budget smoke (`pocket_contact_grid_top_budget_smoke_20260225`) shows PLIP full satisfaction (`9/9`) with PLIP-fill while preserving zero ligand/internal clashes.
 
 ## 2026-02-02
 
