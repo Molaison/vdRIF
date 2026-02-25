@@ -119,6 +119,24 @@ def _pair_clash_full_atom(
     return bool((d2 < thr).any())
 
 
+def _candidate_extent_from_ca(
+    world_xyz: np.ndarray,  # (n,m,3)
+    ca_xyz: np.ndarray,  # (n,3)
+    vdw: np.ndarray,  # (m,)
+) -> np.ndarray:
+    """
+    Upper bound of each residue's spatial extent around CA:
+      max_a ( ||CA-atom_a|| + vdw_a )
+    Missing atoms (NaN coordinates) are ignored.
+    """
+    d = world_xyz - ca_xyz[:, None, :]
+    d2 = np.einsum("nkj,nkj->nk", d, d)
+    dist = np.sqrt(np.clip(d2, 0.0, float("inf")))
+    contrib = np.where(np.isfinite(dist), dist + vdw[None, :], -np.inf)
+    extent = np.max(contrib, axis=1)
+    return np.where(np.isfinite(extent), extent, 0.0).astype(np.float64)
+
+
 def _build_conflicts_grid(
     R: np.ndarray,
     t: np.ndarray,
@@ -128,7 +146,7 @@ def _build_conflicts_grid(
     grid_size: float,
     ca_prefilter: float,
     tol: float,
-) -> list[tuple[int, int]]:
+) -> tuple[list[tuple[int, int]], dict[str, Any]]:
     """
     Build (i,j) conflicts with a uniform grid over CA positions for near-neighbor pruning.
     """
@@ -136,11 +154,24 @@ def _build_conflicts_grid(
     n = ca_only.shape[0]
     inv = 1.0 / float(grid_size)
     use_full = center_atom_xyz_stub is not None and atom_order is not None
-    vdw = _atom_order_vdw(atom_order) if use_full else None
+    vdw = _atom_order_vdw(atom_order) if use_full and atom_order is not None else None
     world_all = None
+    extent_from_ca = None
+    ca_filter_max = float(ca_prefilter)
     if use_full:
+        assert center_atom_xyz_stub is not None and atom_order is not None and vdw is not None
         loc = center_atom_xyz_stub.astype(np.float64)
         world_all = np.einsum("nij,nkj->nki", R, loc) + t[:, None, :]
+        ca_anchor = np.asarray(ca_only, dtype=np.float64).copy()
+        if "CA" in atom_order:
+            ca_i = int(atom_order.index("CA"))
+            ca_world = world_all[:, ca_i, :]
+            ca_ok = np.isfinite(ca_world).all(axis=1)
+            if np.any(ca_ok):
+                ca_anchor[ca_ok] = ca_world[ca_ok]
+        extent_from_ca = _candidate_extent_from_ca(world_all, ca_anchor, vdw=vdw)
+        if extent_from_ca.size > 0:
+            ca_filter_max = max(float(ca_prefilter), float(2.0 * float(extent_from_ca.max()) - float(tol)))
 
     def cell_key(p: np.ndarray) -> tuple[int, int, int]:
         return (int(math.floor(p[0] * inv)), int(math.floor(p[1] * inv)), int(math.floor(p[2] * inv)))
@@ -150,13 +181,17 @@ def _build_conflicts_grid(
         k = cell_key(ca_only[i])
         cells.setdefault(k, []).append(i)
 
-    # Need to search enough neighboring cells so that any pair within ca_prefilter is considered.
-    # Range in cells is ceil(ca_prefilter / grid_size) per dimension.
-    r = int(math.ceil(float(ca_prefilter) / float(grid_size)))
+    # Need to search enough neighboring cells so that any pair within the broad-phase cutoff is considered.
+    # Range in cells is ceil(cutoff / grid_size) per dimension.
+    r = int(math.ceil(float(ca_filter_max) / float(grid_size)))
     neighbors = [(dx, dy, dz) for dx in range(-r, r + 1) for dy in range(-r, r + 1) for dz in range(-r, r + 1)]
 
     conflicts: list[tuple[int, int]] = []
-    ca2 = float(ca_prefilter) ** 2
+    ca2 = float(ca_filter_max) ** 2
+    n_pairs_cell = 0
+    n_pairs_global_prefilter = 0
+    n_pairs_dynamic_prefilter = 0
+    n_pair_tests = 0
 
     for key, idxs in cells.items():
         # Compare within this cell and neighbor cells, but avoid duplicates by enforcing i<j and ordering by cell key.
@@ -169,21 +204,39 @@ def _build_conflicts_grid(
                 for j in jdxs:
                     if j <= i:
                         continue
+                    n_pairs_cell += 1
                     # CA prefilter
                     d = ca_only[i] - ca_only[j]
-                    if float(d @ d) > ca2:
+                    d2 = float(d @ d)
+                    if d2 > ca2:
                         continue
+                    n_pairs_global_prefilter += 1
                     if use_full:
-                        assert world_all is not None and vdw is not None
+                        assert world_all is not None and vdw is not None and extent_from_ca is not None
+                        pair_cut = max(float(ca_prefilter), float(extent_from_ca[i] + extent_from_ca[j] - float(tol)))
+                        if d2 > pair_cut * pair_cut:
+                            continue
+                        n_pairs_dynamic_prefilter += 1
+                        n_pair_tests += 1
                         if _pair_clash_full_atom(world_all[i], world_all[j], vdw=vdw, tol=tol):
                             conflicts.append((i, j))
                     else:
+                        n_pair_tests += 1
                         a_atoms = _candidate_stub_atoms(R[i], t[i])
                         b_atoms = _candidate_stub_atoms(R[j], t[j])
                         if _pair_clash(a_atoms, b_atoms, tol=tol):
                             conflicts.append((i, j))
 
-    return conflicts
+    stats = {
+        "mode": "full_atom_dynamic" if use_full else "stub_fixed",
+        "ca_prefilter_min": float(ca_prefilter),
+        "ca_prefilter_max": float(ca_filter_max),
+        "n_pairs_cell": int(n_pairs_cell),
+        "n_pairs_global_prefilter": int(n_pairs_global_prefilter),
+        "n_pairs_dynamic_prefilter": int(n_pairs_dynamic_prefilter) if use_full else int(n_pairs_global_prefilter),
+        "n_pair_tests": int(n_pair_tests),
+    }
+    return conflicts, stats
 
 
 def _bit_covered(mask: np.ndarray, bit: int) -> np.ndarray:
@@ -495,7 +548,7 @@ def main() -> None:
         solver_report = {"name": "greedy", "status": "GREEDY", "objective_value": None, "n_conflicts": None}
     else:
         # Build conflicts (motif internal clashes) using CA grid for pruning.
-        conflicts = _build_conflicts_grid(
+        conflicts, conflict_stats = _build_conflicts_grid(
             R=R,
             t=t,
             ca_only=ca_xyz,
@@ -556,6 +609,7 @@ def main() -> None:
             "status": solver.StatusName(status),
             "objective_value": float(solver.ObjectiveValue()),
             "n_conflicts": len(conflicts),
+            "conflict_stats": conflict_stats,
         }
 
     # Coverage report

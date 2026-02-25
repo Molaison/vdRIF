@@ -96,6 +96,8 @@ def _to_md(summary: dict[str, Any]) -> str:
     lines.append(f"- python: `{summary['inputs']['python']}`")
     lines.append(f"- top_per_site: `{summary['inputs']['top_per_site']}`")
     lines.append(f"- solver: `{summary['inputs']['solver']}`")
+    lines.append(f"- ranking_mode: `{summary['ranking']['mode']}`")
+    lines.append(f"- max_internal_overlap_rank: `{summary['ranking']['max_internal_overlap_rank']}`")
     lines.append("")
     best = summary.get("best")
     if best is not None:
@@ -136,6 +138,15 @@ def main() -> None:
     ap.add_argument("--top-per-site", type=int, default=200)
     ap.add_argument("--solver", type=str, default="cp_sat", choices=["cp_sat", "greedy"])
     ap.add_argument("--time-limit-s", type=float, default=30.0)
+    ap.add_argument(
+        "--max-internal-overlap-rank",
+        type=float,
+        default=0.25,
+        help=(
+            "Ranking gate: prefer configs with internal_worst_overlap <= this value. "
+            "If none pass, fallback to all valid configs."
+        ),
+    )
     ap.add_argument("--python", type=str, default=sys.executable, help="Python executable to run pipeline scripts.")
     ap.add_argument("--ligand-pdb", type=Path, default=Path("inputs/01_cgmap/MTX.pdb"))
     ap.add_argument("--polar-sites", type=Path, default=Path("outputs/02_polar_sites/MTX_polar_sites.json"))
@@ -313,6 +324,7 @@ def main() -> None:
                     "internal_worst_overlap": float(internal.get("worst_overlap", 0.0)),
                     "selected_pocket_score_mean": float(np.mean(p_scores)) if p_scores else 0.0,
                     "selected_pocket_count_mean": float(np.mean(p_counts)) if p_counts else 0.0,
+                    "solver_conflict_stats": solve.get("solver", {}).get("conflict_stats"),
                     "run_dir": str(run_dir),
                 }
             )
@@ -330,8 +342,11 @@ def main() -> None:
         and r.get("internal_clash_ok")
         and not r.get("empty_candidates")
     ]
+    strict_valid = [r for r in valid if float(r.get("internal_worst_overlap", 999.0)) <= float(args.max_internal_overlap_rank)]
+    ranked_pool = strict_valid if strict_valid else valid
+    ranking_mode = "strict_internal_overlap" if strict_valid else "fallback_any_valid"
     valid_sorted = sorted(
-        valid,
+        ranked_pool,
         key=lambda r: (
             -float(r.get("selected_pocket_score_mean", 0.0)),
             -float(r.get("selected_pocket_count_mean", 0.0)),
@@ -355,6 +370,12 @@ def main() -> None:
             "time_limit_s": float(args.time_limit_s),
             "vdxform_dir": str(vdx),
             "configs": chosen_names,
+        },
+        "ranking": {
+            "mode": ranking_mode,
+            "max_internal_overlap_rank": float(args.max_internal_overlap_rank),
+            "n_valid": int(len(valid)),
+            "n_strict_valid": int(len(strict_valid)),
         },
         "results": results,
         "best": best,
