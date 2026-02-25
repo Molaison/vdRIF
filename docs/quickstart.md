@@ -163,6 +163,26 @@ uv run -p 3.11 python scripts/05_solver/05_validate_motif_internal_clashes.py \
   --motif-pdb outputs/05_solver/MTX_motif.pdb -o outputs/05_solver/MTX_motif_internal_clash.json --ligand-resname MTX
 ```
 
+### 8) Pocket-contact sweep (full-library tuning)
+
+For MTX full-library sweeps over `MIN_SC_CONTACT_COUNT` and `SC_CONTACT_WEIGHT` with PLIP/clash summaries:
+
+```bash
+python scripts/99_harness/05_benchmark_pocket_contact_grid.py \
+  --python-bin /xcfhome/zpzeng/project_run_log/spur_of_moment/001_molten_rifdock_vdm/.venv/bin/python \
+  --script-root /xcfhome/zpzeng/project_run_log/spur_of_moment/001_molten_rifdock_vdm/.worktrees/feat-vdm-pocket-remodel-20260225 \
+  --data-root /xcfhome/zpzeng/project_run_log/spur_of_moment/001_molten_rifdock_vdm \
+  --vdxform-dir processed/03_vdxform_full \
+  --solver greedy \
+  --top-per-site 200 \
+  --top-per-site-per-atom 50 \
+  --min-sidechain-contact-count-list 1,2 \
+  --sidechain-contact-weight-list 0.05,0.10,0.15 \
+  --tag pocket_contact_grid_YYYYMMDD
+```
+
+See `docs/pocket_contact_sweep_20260225.md` for one concrete run and interpretation.
+
 ## Environment notes (important)
 
 - This workspace’s system `python3` is 3.6.8, and the system RDKit is broken (missing FreeINCHI symbols).

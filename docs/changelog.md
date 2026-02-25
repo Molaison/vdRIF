@@ -9,6 +9,8 @@
   - `scripts/04_candidates/02_run_mtx_candidates.sh`
 - Updated determinism harness to cover the new pocket-contact controls: `scripts/99_harness/01_mtx_determinism_regression.py`.
 - Documented the pocket-contact tuning path in `docs/quickstart.md`.
+- Added full-library pocket-contact benchmark harness: `scripts/99_harness/05_benchmark_pocket_contact_grid.py`.
+- Ran a 6-point sweep (`count={1,2}`, `weight={0.05,0.10,0.15}`) and documented results in `docs/pocket_contact_sweep_20260225.md` (PLIP all-satisfied remained `0/6`; unsatisfied atoms stable at `N/N5/O`).
 
 ## 2026-02-02
 
