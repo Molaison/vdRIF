@@ -28,6 +28,12 @@ mkdir -p "$(dirname "$OUT_PREFIX")" "$(dirname "$LOG")"
     --out-prefix "$OUT_PREFIX" \
     --chunk-size 5000 \
     --top-per-site 200 \
+    --top-per-site-per-atom 50 \
+    --allow-backbone-hbonds \
+    --acceptor-model plip \
+    --min-lig-donor-angle-deg 60 \
+    --pocket-contact-cutoff 4.5 \
+    --min-pocket-sidechain-contacts 0 \
+    --pocket-contact-weight 0.2 \
     --clash-tol 0.5
 } 2>&1 | tee "$LOG"
-

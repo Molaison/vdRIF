@@ -42,5 +42,6 @@ CLASH_TOL="${CLASH_TOL:-0.5}"
   uv run -p 3.11 python "${ROOT}/scripts/05_solver/03_validate_motif_polar_satisfaction.py" \
     --polar-sites "${ROOT}/outputs/02_polar_sites/MTX_polar_sites.json" \
     --motif-pdb "$OUT_PDB" \
+    --acceptor-model plip \
     -o "$VAL_JSON"
 } 2>&1 | tee "$LOG"

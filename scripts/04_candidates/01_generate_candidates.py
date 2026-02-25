@@ -351,6 +351,31 @@ def _as_aa3_str(aa_arr: np.ndarray) -> np.ndarray:
     return aa_arr.astype("U3")
 
 
+def _sidechain_contact_counts(
+    world_all: np.ndarray,  # (n,atoms,3)
+    sidechain_idx: list[int],
+    ligand_xyz: np.ndarray,  # (m,3)
+    cutoff: float,
+) -> np.ndarray:
+    """
+    Count, per candidate, how many sidechain heavy atoms are within `cutoff`
+    of any ligand heavy atom.
+
+    Returns shape (n,) int32.
+    """
+    n = int(world_all.shape[0])
+    if n == 0 or not sidechain_idx:
+        return np.zeros((n,), dtype=np.int32)
+    sc = world_all[:, sidechain_idx, :]
+    if sc.shape[1] == 0:
+        return np.zeros((n,), dtype=np.int32)
+    d = sc[:, :, None, :] - ligand_xyz[None, None, :, :]
+    d2 = np.einsum("nkmj,nkmj->nkm", d, d)
+    d2 = np.where(np.isfinite(d2), d2, float("inf"))
+    contact = (d2 <= float(cutoff) ** 2).any(axis=2)
+    return contact.sum(axis=1).astype(np.int32)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="Generate vdM-based residue placement candidates around a fixed ligand.")
     ap.add_argument("--ligand-pdb", type=Path, required=True)
@@ -378,9 +403,9 @@ def main() -> None:
         help="Comma-separated 3-letter amino acids to exclude (default: PRO,CYS).",
     )
     ap.add_argument(
-        "--sidechain-only-satisfaction",
+        "--allow-backbone-hbonds",
         action="store_true",
-        help="If set, exclude backbone N/O atoms from donor/acceptor satisfaction tests (sidechain-only).",
+        help="Allow backbone N/O atoms to satisfy ligand polar atoms. Default is sidechain-only satisfaction.",
     )
     ap.add_argument(
         "--min-prot-donor-angle-deg",
@@ -394,7 +419,7 @@ def main() -> None:
     ap.add_argument(
         "--min-lig-donor-angle-deg",
         type=float,
-        default=90.0,
+        default=60.0,
         help="Minimum H-D-A angle (deg) for ligand donors satisfying protein acceptors (uses explicit H coords).",
     )
     ap.add_argument(
@@ -406,7 +431,7 @@ def main() -> None:
     ap.add_argument(
         "--acceptor-model",
         type=str,
-        default="legacy",
+        default="plip",
         choices=["legacy", "plip"],
         help=(
             "How to type protein acceptor atoms when satisfying ligand donors. "
@@ -435,6 +460,24 @@ def main() -> None:
         default=0.0,
         help="Minimum dot( sidechain_dir , direction-to-ligand-centroid ) to accept a candidate (default 0.0).",
     )
+    ap.add_argument(
+        "--pocket-contact-cutoff",
+        type=float,
+        default=4.5,
+        help="Distance cutoff (Angstrom) for counting sidechain-ligand contacts used in candidate ranking.",
+    )
+    ap.add_argument(
+        "--min-pocket-sidechain-contacts",
+        type=int,
+        default=0,
+        help="Require at least this many sidechain heavy atoms contacting ligand heavy atoms per candidate.",
+    )
+    ap.add_argument(
+        "--pocket-contact-weight",
+        type=float,
+        default=0.2,
+        help="Weight for sidechain-ligand contact count in candidate score.",
+    )
     ap.add_argument("--require-full-coverage", action="store_true")
     args = ap.parse_args()
 
@@ -457,11 +500,10 @@ def main() -> None:
         lig_donor_h_xyz_by_name = _ligand_donor_h_xyz_by_atom_name_openbabel(args.ligand_pdb)
         lig_donor_h_source = "openbabel"
     except ImportError:
-        # OpenBabel can be unavailable or broken in some environments. In that case, we do *not* trust
-        # explicit ligand H coordinates from the input PDB (they can be missing or arbitrary), so we
-        # intentionally fall back to distance-only ligand-donor satisfaction checks.
-        lig_donor_h_xyz_by_name = {}
-        lig_donor_h_source = "none"
+        # OpenBabel can be unavailable or broken in some environments.
+        # Fallback to explicit-H coordinates from the input PDB if present.
+        lig_donor_h_xyz_by_name = _ligand_donor_h_xyz_by_atom_name(ligand)
+        lig_donor_h_source = "rdkit_explicit_h"
 
     # Residue atoms used for clash filtering, in rifdock BackboneActor local coords (Angstrom)
     # See external/rifdock/schemelib/scheme/actor/BackboneActor.hh get_n_ca_c/get_cb.
@@ -491,6 +533,7 @@ def main() -> None:
     xform_world_stub_12: list[np.ndarray] = []
     center_atom_xyz_stub: list[np.ndarray] = []
     cluster_number: list[np.int32] = []
+    pocket_contact_count: list[np.uint8] = []
 
     # Union of polar atoms that are coverable by the site-frames (not geometric satisfaction).
     coverage_union = 0
@@ -565,12 +608,12 @@ def main() -> None:
         def atom_indices(names: set[str]) -> list[int]:
             return [i for i, nm in enumerate(atom_order) if nm in names]
 
-        if args.sidechain_only_satisfaction:
-            donor_idx = atom_indices({nm for nm in donor_atoms if nm not in backbone_atoms})
-            acceptor_idx = atom_indices({nm for nm in acceptor_atoms if nm not in backbone_atoms})
-        else:
+        if args.allow_backbone_hbonds:
             donor_idx = atom_indices(donor_atoms)
             acceptor_idx = atom_indices(acceptor_atoms)
+        else:
+            donor_idx = atom_indices({nm for nm in donor_atoms if nm not in backbone_atoms})
+            acceptor_idx = atom_indices({nm for nm in acceptor_atoms if nm not in backbone_atoms})
 
         # For protein donor angle filtering (B-D-A), choose a deterministic "base" heavy atom for each donor atom.
         donor_base_name = {
@@ -622,26 +665,35 @@ def main() -> None:
         # Implemented with a min-heap where the root is the *worst* element:
         # key = (score, -vdm_id)
 
-        heap_all: list[tuple[float, int, int, int]] = []  # (score, -vdm_id, idx, cov)
-        heaps_by_bit: dict[int, list[tuple[float, int, int, int]]] = {bit: [] for _an, bit, _roles, _pxyz in site_polar}
+        heap_all: list[tuple[float, int, int, int, int]] = []  # (score, -vdm_id, idx, cov, pocket_contacts)
+        heaps_by_bit: dict[int, list[tuple[float, int, int, int, int]]] = {
+            bit: [] for _an, bit, _roles, _pxyz in site_polar
+        }
 
-        def _maybe_add_to_heap(h: list[tuple[float, int, int, int]], limit: int, idx: int, sc: float, cov: int) -> None:
+        def _maybe_add_to_heap(
+            h: list[tuple[float, int, int, int, int]],
+            limit: int,
+            idx: int,
+            sc: float,
+            cov: int,
+            pocket_contacts_i: int,
+        ) -> None:
             v = int(vdm_ids[idx])
-            item = (float(sc), -v, int(idx), int(cov))
+            item = (float(sc), -v, int(idx), int(cov), int(pocket_contacts_i))
             if len(h) < limit:
                 heapq.heappush(h, item)
                 return
             if item[:2] > h[0][:2]:
                 heapq.heapreplace(h, item)
 
-        def maybe_add(idx: int, sc: float, cov: int) -> None:
+        def maybe_add(idx: int, sc: float, cov: int, pocket_contacts_i: int) -> None:
             if top_k_per_atom > 0:
                 # Insert into each per-bit heap for the bits this candidate satisfies.
                 for bit in heaps_by_bit.keys():
                     if cov & (1 << bit):
-                        _maybe_add_to_heap(heaps_by_bit[bit], top_k_per_atom, idx, sc, cov)
+                        _maybe_add_to_heap(heaps_by_bit[bit], top_k_per_atom, idx, sc, cov, pocket_contacts_i)
             else:
-                _maybe_add_to_heap(heap_all, top_k_site, idx, sc, cov)
+                _maybe_add_to_heap(heap_all, top_k_site, idx, sc, cov, pocket_contacts_i)
 
         n = vdm_ids.shape[0]
         chunk = int(args.chunk_size)
@@ -902,15 +954,38 @@ def main() -> None:
             pass_cov = pass_cov[ok_full]
             pass_idx = pass_idx[ok_full]
 
+            pass_contacts = _sidechain_contact_counts(
+                world_all[ok_full],
+                sidechain_idx=sidechain_idx,
+                ligand_xyz=lig_xyz,
+                cutoff=float(args.pocket_contact_cutoff),
+            )
+            if int(args.min_pocket_sidechain_contacts) > 0:
+                ok_contacts = pass_contacts >= int(args.min_pocket_sidechain_contacts)
+                if not np.any(ok_contacts):
+                    continue
+                pass_cov = pass_cov[ok_contacts]
+                pass_idx = pass_idx[ok_contacts]
+                pass_contacts = pass_contacts[ok_contacts]
+
             # Finally, score and keep top-k for this site.
-            for idx, cov in zip(pass_idx.tolist(), pass_cov.tolist(), strict=True):
-                sc = float(prior[idx]) + 1e-3 * int(cov).bit_count()
-                maybe_add(int(idx), sc, int(cov))
+            for idx, cov, pocket_contacts_i in zip(
+                pass_idx.tolist(),
+                pass_cov.tolist(),
+                pass_contacts.tolist(),
+                strict=True,
+            ):
+                sc = (
+                    float(prior[idx])
+                    + 1e-3 * int(cov).bit_count()
+                    + float(args.pocket_contact_weight) * float(pocket_contacts_i)
+                )
+                maybe_add(int(idx), sc, int(cov), int(pocket_contacts_i))
 
         # Emit this site's kept candidates
         if top_k_per_atom > 0:
             # 1) Guarantee at least one candidate per bit (if available)
-            chosen: dict[int, tuple[float, int, int, int]] = {}
+            chosen: dict[int, tuple[float, int, int, int, int]] = {}
             for bit, h in heaps_by_bit.items():
                 if not h:
                     continue
@@ -918,7 +993,7 @@ def main() -> None:
                 chosen[best_item[2]] = best_item  # key by idx
 
             # 2) Pool remaining per-bit candidates and fill up to top_k_site
-            pool: dict[int, tuple[float, int, int, int]] = dict(chosen)
+            pool: dict[int, tuple[float, int, int, int, int]] = dict(chosen)
             for h in heaps_by_bit.values():
                 for item in h:
                     # same idx should have same cov; keep best score deterministically
@@ -932,7 +1007,7 @@ def main() -> None:
                 kept = kept[:top_k_site]
         else:
             kept = sorted(heap_all, key=lambda x: (-x[0], -x[1]))
-        for sc, neg_vdm, idx, cov in kept:
+        for sc, neg_vdm, idx, cov, pocket_contacts_i in kept:
             cid = _stable_u64(f"{site.site_id}|{int(vdm_ids[idx])}")
             cand_id.append(np.uint64(cid))
             site_index.append(np.uint16(site.site_index))
@@ -941,6 +1016,7 @@ def main() -> None:
             score.append(np.float32(sc))
             cover_mask.append(np.uint16(cov))
             cluster_number.append(np.int32(cluster_number_i32[idx]))
+            pocket_contact_count.append(np.uint8(max(0, min(255, int(pocket_contacts_i)))))
             satisfied_union |= int(cov)
 
             # Compute world stub xform12 for output
@@ -981,6 +1057,7 @@ def main() -> None:
     score_arr = np.array([score[i] for i in keep_idx], dtype=np.float32)
     cover_arr = np.array([cover_mask[i] for i in keep_idx], dtype=np.uint16)
     cluster_number_arr = np.array([cluster_number[i] for i in keep_idx], dtype=np.int32)
+    pocket_contact_arr = np.array([pocket_contact_count[i] for i in keep_idx], dtype=np.uint8)
     xw12_arr = np.stack([xform_world_stub_12[i] for i in keep_idx], axis=0).astype(np.float32)
     center_stub_arr = np.stack([center_atom_xyz_stub[i] for i in keep_idx], axis=0).astype(np.float32)
 
@@ -996,6 +1073,7 @@ def main() -> None:
         aa3=aa3_arr,
         score_f32=score_arr,
         cover_mask_u16=cover_arr,
+        lig_sc_contact_count_u8=pocket_contact_arr,
         xform_world_stub_12_f32=xw12_arr,
         center_atom_xyz_stub_f32=center_stub_arr,
     )
@@ -1010,7 +1088,13 @@ def main() -> None:
         "params": {
             "chunk_size": int(args.chunk_size),
             "top_per_site": int(args.top_per_site),
+            "top_per_site_per_atom": int(args.top_per_site_per_atom),
             "clash_tol": float(args.clash_tol),
+            "allow_backbone_hbonds": bool(args.allow_backbone_hbonds),
+            "acceptor_model": str(args.acceptor_model),
+            "pocket_contact_cutoff": float(args.pocket_contact_cutoff),
+            "min_pocket_sidechain_contacts": int(args.min_pocket_sidechain_contacts),
+            "pocket_contact_weight": float(args.pocket_contact_weight),
         },
         "ligand": {"n_heavy_atoms": int(lig_xyz.shape[0]), "heavy_atom_names": lig_names},
         "ligand_donor_h_source": str(lig_donor_h_source),
@@ -1021,6 +1105,11 @@ def main() -> None:
         "missing_cg": sorted(missing_cg),
         "frame_coverage_union_bitmask": int(coverage_union),
         "satisfaction_union_bitmask": int(satisfied_union),
+        "pocket_contact_stats": {
+            "mean": float(np.mean(pocket_contact_arr)) if pocket_contact_arr.size else 0.0,
+            "max": int(np.max(pocket_contact_arr)) if pocket_contact_arr.size else 0,
+            "min": int(np.min(pocket_contact_arr)) if pocket_contact_arr.size else 0,
+        },
     }
     _write_json(out_json, meta)
 

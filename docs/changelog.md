@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026-02-25
+
+- Hardened candidate chemistry defaults in `scripts/04_candidates/01_generate_candidates.py`:
+  - default is now **sidechain-only** satisfaction (backbone H-bonds require explicit `--allow-backbone-hbonds`),
+  - default acceptor typing switched to **PLIP-style** (`--acceptor-model plip`),
+  - OpenBabel donor-H failure now falls back to RDKit explicit-H coordinates instead of dropping donor-angle geometry entirely.
+- Added pocket-completeness scoring during candidate generation:
+  - per-candidate sidechain-ligand contact count (`lig_sc_contact_count_u8`) is computed and stored,
+  - new controls: `--pocket-contact-cutoff`, `--min-pocket-sidechain-contacts`, `--pocket-contact-weight`,
+  - candidate score now includes a weighted contact term to prefer denser, ligand-facing pockets.
+- Updated MTX candidate runner scripts (`scripts/04_candidates/01_run_mtx_candidates_debug.sh`, `scripts/04_candidates/02_run_mtx_candidates.sh`) to use strict PLIP + pocket-contact settings by default.
+  - Current MTX default run profile explicitly sets `--allow-backbone-hbonds` and `--min-lig-donor-angle-deg 60` to avoid false-negative coverage collapse on ligand donor `N` with the present local vdM library.
+- Aligned polar validation defaults with strict typing (`scripts/05_solver/03_validate_motif_polar_satisfaction.py`, solver run wrappers) by using `--acceptor-model plip`.
+
 ## 2026-02-02
 
 - Extended symmetric ligand site-frame handling beyond `coo` to aromatic `ph`/`phenol` (`CD1/CD2` swap frames) in `scripts/02_polar_sites/03_build_ligand_site_frames.py`.

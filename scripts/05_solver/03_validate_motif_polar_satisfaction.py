@@ -45,7 +45,7 @@ def main() -> None:
     ap.add_argument(
         "--acceptor-model",
         type=str,
-        default="legacy",
+        default="plip",
         choices=["legacy", "plip"],
         help=(
             "How to type protein acceptor atoms when satisfying ligand donors. "
