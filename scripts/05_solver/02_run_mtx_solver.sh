@@ -16,6 +16,8 @@ mkdir -p "$(dirname "$OUT_JSON")" "$(dirname "$OUT_PDB")" "$(dirname "$LOG")"
 
 TIME_LIMIT_S="${TIME_LIMIT_S:-300}"
 CLASH_TOL="${CLASH_TOL:-0.5}"
+MIN_LIG_CONTACT_FRACTION="${MIN_LIG_CONTACT_FRACTION:-0.35}"
+MIN_LIG_CONTACT_ATOMS="${MIN_LIG_CONTACT_ATOMS:-0}"
 
 {
   echo "[run] ligand: $LIG"
@@ -24,6 +26,7 @@ CLASH_TOL="${CLASH_TOL:-0.5}"
   echo "[run] out_json: $OUT_JSON"
   echo "[run] out_pdb: $OUT_PDB"
   echo "[run] TIME_LIMIT_S=$TIME_LIMIT_S CLASH_TOL=$CLASH_TOL"
+  echo "[run] MIN_LIG_CONTACT_FRACTION=$MIN_LIG_CONTACT_FRACTION MIN_LIG_CONTACT_ATOMS=$MIN_LIG_CONTACT_ATOMS"
   uv sync -p 3.11 --extra rdkit
   uv run -p 3.11 python "${ROOT}/scripts/05_solver/01_solve_motif.py" \
     --candidates-npz "$CAND_NPZ" \
@@ -37,7 +40,9 @@ CLASH_TOL="${CLASH_TOL:-0.5}"
     --num-workers 1 \
     --grid-size 4.0 \
     --ca-prefilter 8.0 \
-    --clash-tol "$CLASH_TOL"
+    --clash-tol "$CLASH_TOL" \
+    --min-ligand-contact-fraction "$MIN_LIG_CONTACT_FRACTION" \
+    --min-ligand-contact-atoms "$MIN_LIG_CONTACT_ATOMS"
 
   uv run -p 3.11 python "${ROOT}/scripts/05_solver/03_validate_motif_polar_satisfaction.py" \
     --polar-sites "${ROOT}/outputs/02_polar_sites/MTX_polar_sites.json" \

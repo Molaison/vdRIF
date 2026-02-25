@@ -220,6 +220,7 @@ def _solve_greedy(
     t: np.ndarray,
     ca_xyz: np.ndarray,
     polar_atoms: list[str],
+    lig_contact_bool: np.ndarray,
     center_atom_xyz_stub: np.ndarray,
     atom_order: list[str],
     params: SolveParams,
@@ -231,6 +232,7 @@ def _solve_greedy(
     n = int(cand_id.shape[0])
     n_bits = len(polar_atoms)
     need = (1 << n_bits) - 1
+    n_lig_atoms = int(lig_contact_bool.shape[1])
 
     vdw = _atom_order_vdw(atom_order)
     ca2 = float(params.ca_prefilter) ** 2
@@ -243,6 +245,9 @@ def _solve_greedy(
     selected_world: list[np.ndarray] = []
 
     uncovered = int(need)
+    lig_uncovered = np.ones((n_lig_atoms,), dtype=bool)
+
+    order_list = order.tolist()
 
     def clashes(i: int) -> bool:
         if not selected:
@@ -270,22 +275,35 @@ def _solve_greedy(
 
         picked = False
         for nb in range(max_new, 0, -1):
-            for i in order.tolist():
+            best_i = -1
+            best_key: tuple[int, float, int] | None = None
+            for i in order_list:
                 if selected_mask[i]:
                     continue
                 if int(new_bits[i]) != nb:
                     continue
                 if clashes(i):
                     continue
+                if n_lig_atoms > 0:
+                    new_lig = int(np.count_nonzero(lig_contact_bool[i] & lig_uncovered))
+                else:
+                    new_lig = 0
+                key = (new_lig, float(score_f[i]), -int(cand_id[i]))
+                if best_key is None or key > best_key:
+                    best_key = key
+                    best_i = i
+            if best_i >= 0:
+                i = best_i
                 selected.append(i)
                 selected_mask[i] = True
                 uncovered &= ~int(cover[i])
+                if n_lig_atoms > 0:
+                    lig_uncovered &= ~lig_contact_bool[i]
                 Ri = R[i]
                 ti = t[i]
                 loc = center_atom_xyz_stub[i].astype(np.float64)
                 selected_world.append(np.einsum("ij,kj->ki", Ri, loc) + ti[None, :])
                 picked = True
-                break
             if picked:
                 break
         if not picked:
@@ -298,19 +316,32 @@ def _solve_greedy(
     # Phase B: fill to min_res with best non-clashing candidates.
     while len(selected) < params.min_res and len(selected) < params.max_res:
         picked = False
-        for i in order.tolist():
+        best_i = -1
+        best_key: tuple[int, float, int] | None = None
+        for i in order_list:
             if selected_mask[i]:
                 continue
             if clashes(i):
                 continue
+            if n_lig_atoms > 0:
+                new_lig = int(np.count_nonzero(lig_contact_bool[i] & lig_uncovered))
+            else:
+                new_lig = 0
+            key = (new_lig, float(score_f[i]), -int(cand_id[i]))
+            if best_key is None or key > best_key:
+                best_key = key
+                best_i = i
+        if best_i >= 0:
+            i = best_i
             selected.append(i)
             selected_mask[i] = True
+            if n_lig_atoms > 0:
+                lig_uncovered &= ~lig_contact_bool[i]
             Ri = R[i]
             ti = t[i]
             loc = center_atom_xyz_stub[i].astype(np.float64)
             selected_world.append(np.einsum("ij,kj->ki", Ri, loc) + ti[None, :])
             picked = True
-            break
         if not picked:
             break
 
@@ -409,6 +440,18 @@ def main() -> None:
     ap.add_argument("--grid-size", type=float, default=4.0)
     ap.add_argument("--ca-prefilter", type=float, default=12.0)
     ap.add_argument("--clash-tol", type=float, default=0.5)
+    ap.add_argument(
+        "--min-ligand-contact-atoms",
+        type=int,
+        default=0,
+        help="Require at least this many ligand heavy atoms to be contacted by the selected motif (default 0).",
+    )
+    ap.add_argument(
+        "--min-ligand-contact-fraction",
+        type=float,
+        default=0.0,
+        help="Require selected motif to contact at least this fraction of ligand heavy atoms (default 0.0).",
+    )
     args = ap.parse_args()
 
     params = SolveParams(
@@ -435,11 +478,28 @@ def main() -> None:
     score_f = z["score_f32"].astype(np.float64)
     aa3 = z["aa3"]
     xform12 = z["xform_world_stub_12_f32"]
+    if "lig_contact_bool" not in z.files:
+        raise KeyError("Candidates NPZ missing lig_contact_bool; regenerate candidates with the updated pipeline.")
+    lig_contact_bool = z["lig_contact_bool"].astype(bool)
+    if lig_contact_bool.ndim != 2:
+        raise ValueError(f"Expected lig_contact_bool to be 2D (n,m), got shape {lig_contact_bool.shape}.")
     center_atom_xyz_stub = z["center_atom_xyz_stub_f32"] if "center_atom_xyz_stub_f32" in z.files else None
+    sidechain_contact_count = (
+        z["sidechain_contact_count_u8"].astype(np.uint8)
+        if "sidechain_contact_count_u8" in z.files
+        else np.zeros((int(z["cand_id_u64"].shape[0]),), dtype=np.uint8)
+    )
+    sidechain_min_dist = (
+        z["sidechain_min_dist_f32"].astype(np.float64)
+        if "sidechain_min_dist_f32" in z.files
+        else np.full((int(z["cand_id_u64"].shape[0]),), np.nan, dtype=np.float64)
+    )
 
     n = int(cand_id.shape[0])
     if n == 0:
         raise ValueError("No candidates provided.")
+    if int(lig_contact_bool.shape[0]) != n:
+        raise ValueError(f"lig_contact_bool row count mismatch: {lig_contact_bool.shape[0]} vs {n}")
 
     # Deterministic ranking for tie-break.
     order = sorted(range(n), key=lambda i: (-float(score_f[i]), int(cand_id[i])))
@@ -472,6 +532,7 @@ def main() -> None:
             t=t,
             ca_xyz=ca_xyz,
             polar_atoms=polar_atoms,
+            lig_contact_bool=lig_contact_bool,
             center_atom_xyz_stub=center_atom_xyz_stub,
             atom_order=atom_order,
             params=params,
@@ -492,6 +553,8 @@ def main() -> None:
 
         model = cp_model.CpModel()
         x = [model.NewBoolVar(f"x_{i}") for i in range(n)]
+        n_lig_atoms = int(lig_contact_bool.shape[1])
+        y = [model.NewBoolVar(f"y_lig_{j}") for j in range(n_lig_atoms)]
 
         # Cardinality
         model.Add(sum(x) >= params.min_res)
@@ -508,20 +571,39 @@ def main() -> None:
         for i, j in conflicts:
             model.Add(x[i] + x[j] <= 1)
 
+        # Ligand-contact coverage (pocket completeness)
+        for j in range(n_lig_atoms):
+            idxs = np.nonzero(lig_contact_bool[:, j])[0].tolist()
+            if not idxs:
+                model.Add(y[j] == 0)
+                continue
+            model.Add(sum(x[i] for i in idxs) >= y[j])
+
+        min_contact_atoms = max(
+            int(args.min_ligand_contact_atoms),
+            int(math.ceil(float(args.min_ligand_contact_fraction) * float(n_lig_atoms) - 1e-12)),
+        )
+        if min_contact_atoms > 0:
+            model.Add(sum(y) >= int(min_contact_atoms))
+
         # Objective: lexicographic (encoded as 1 linear objective):
         # 1) minimize number of residues (prefer smaller motifs; satisfies user's \"8-15\" as a bound)
-        # 2) maximize total score (within the minimal count)
-        # 3) deterministic tie-break by candidate rank
+        # 2) maximize ligand-contact coverage (within the minimal count)
+        # 3) maximize total score (within fixed count + contact coverage)
+        # 4) deterministic tie-break by candidate rank
         #
-        # Encode as: maximize sum( gain_i - B ) * x_i where B is large enough that any +1 residue loses
-        # against any possible gain difference, thus enforcing \"minimize count\" first.
+        # Encode as: maximize sum((gain_i - B) * x_i) + contact_weight * sum(y_j).
+        # Choose constants so one extra selected residue always loses against any possible
+        # score/contact gain, and one extra contacted ligand atom dominates score tie differences.
         score_int = np.round(np.clip(score_f, -1e6, 1e6) * 1000.0).astype(np.int64)
         tie_int = (n - 1 - rank).astype(np.int64)  # earlier rank => larger tie
         gain = score_int + tie_int
-        span = int(params.max_res) * int(gain.max() - gain.min())
-        B = span + 1
+        gain_abs = int(max(abs(int(gain.min())), abs(int(gain.max())), 1))
+        max_gain_delta = int(params.max_res) * 2 * gain_abs
+        contact_weight = int(max_gain_delta + 1)
+        B = int(max_gain_delta + (n_lig_atoms * contact_weight) + 1)
         coeff = gain - B
-        model.Maximize(sum(int(coeff[i]) * x[i] for i in range(n)))
+        model.Maximize(sum(int(coeff[i]) * x[i] for i in range(n)) + sum(contact_weight * yj for yj in y))
 
         solver = cp_model.CpSolver()
         solver.parameters.max_time_in_seconds = params.time_limit_s
@@ -535,11 +617,14 @@ def main() -> None:
 
         selected = [i for i in range(n) if solver.Value(x[i]) == 1]
         selected_sorted = sorted(selected, key=lambda i: (-float(score_f[i]), int(cand_id[i])))
+        selected_lig_contact_atoms = int(sum(solver.Value(yj) for yj in y))
         solver_report = {
             "name": "cp_sat",
             "status": solver.StatusName(status),
             "objective_value": float(solver.ObjectiveValue()),
             "n_conflicts": len(conflicts),
+            "selected_ligand_contact_atoms": selected_lig_contact_atoms,
+            "total_ligand_atoms": n_lig_atoms,
         }
 
     # Coverage report
@@ -547,6 +632,12 @@ def main() -> None:
     for i in selected_sorted:
         cov |= int(cover[i])
     need = (1 << len(polar_atoms)) - 1
+    if selected_sorted:
+        lig_contact_selected = int(lig_contact_bool[np.asarray(selected_sorted, dtype=np.int64)].any(axis=0).sum())
+    else:
+        lig_contact_selected = 0
+    lig_contact_total = int(lig_contact_bool.shape[1])
+    lig_contact_fraction = float(lig_contact_selected / lig_contact_total) if lig_contact_total > 0 else 0.0
 
     report = {
         "inputs": {
@@ -563,12 +654,17 @@ def main() -> None:
             "ca_prefilter": params.ca_prefilter,
             "clash_tol": params.clash_tol,
             "solver": str(args.solver),
+            "min_ligand_contact_atoms": int(args.min_ligand_contact_atoms),
+            "min_ligand_contact_fraction": float(args.min_ligand_contact_fraction),
         },
         "solver": solver_report,
         "n_candidates": n,
         "n_selected": len(selected_sorted),
         "coverage_bitmask": int(cov),
         "coverage_complete": bool(cov == need),
+        "ligand_contact_atoms_selected": lig_contact_selected,
+        "ligand_contact_atoms_total": lig_contact_total,
+        "ligand_contact_fraction": lig_contact_fraction,
         "polar_atoms": polar_atoms,
         "selected": [
             {
@@ -576,6 +672,8 @@ def main() -> None:
                 "score": float(score_f[i]),
                 "aa3": str(aa3[i]),
                 "cover_mask_u16": int(cover[i]),
+                "sidechain_contact_count": int(sidechain_contact_count[i]),
+                "sidechain_min_dist": float(sidechain_min_dist[i]),
             }
             for i in selected_sorted
         ],

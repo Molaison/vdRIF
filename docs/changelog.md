@@ -1,5 +1,27 @@
 # Changelog
 
+## 2026-02-25
+
+- Added ligand-contact-aware pocket shaping to candidate generation (`scripts/04_candidates/01_generate_candidates.py`):
+  - New hard filters on sidechain-ligand proximity (`--min-sidechain-ligand-contacts`, `--max-sidechain-min-dist`).
+  - New contact-aware scoring term (`--score-weight-contact-count`).
+  - Candidate NPZ now exports `lig_contact_bool`, `sidechain_contact_count_u8`, `sidechain_min_dist_f32`.
+- Updated motif solver (`scripts/05_solver/01_solve_motif.py`) to optimize pocket completeness:
+  - CP-SAT now includes ligand-contact coverage variables and objective term.
+  - Added optional hard lower bound: `--min-ligand-contact-atoms` / `--min-ligand-contact-fraction`.
+  - Greedy solver tie-break now prioritizes marginal ligand-contact coverage.
+- Updated wrappers/harness defaults to use pocket-aware settings:
+  - `scripts/04_candidates/01_run_mtx_candidates_debug.sh`
+  - `scripts/04_candidates/02_run_mtx_candidates.sh`
+  - `scripts/05_solver/01_run_mtx_solver_debug.sh`
+  - `scripts/05_solver/02_run_mtx_solver.sh`
+  - `scripts/99_harness/01_mtx_determinism_regression.py`
+- Validation on MTX debug path passed:
+  - Polar satisfaction: `outputs/05_solver/MTX_motif_debug_validation.json` (`all_satisfied=true`)
+  - Ligand clash: `outputs/05_solver/MTX_motif_debug_clash_validation.json` (`ok=true`)
+  - Internal clash: `outputs/05_solver/MTX_motif_debug_internal_clash_validation.json` (`ok=true`)
+  - Determinism: `processed/99_harness/mtx_det_pocket_quality_smoke/report.json` (`deterministic=true`)
+
 ## 2026-02-02
 
 - Extended symmetric ligand site-frame handling beyond `coo` to aromatic `ph`/`phenol` (`CD1/CD2` swap frames) in `scripts/02_polar_sites/03_build_ligand_site_frames.py`.

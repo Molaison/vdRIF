@@ -16,6 +16,10 @@ mkdir -p "$(dirname "$OUT_PREFIX")" "$(dirname "$LOG")"
 TOP_PER_SITE="${TOP_PER_SITE:-2000}"
 CHUNK_SIZE="${CHUNK_SIZE:-5000}"
 CLASH_TOL="${CLASH_TOL:-0.5}"
+SC_CONTACT_CUTOFF="${SC_CONTACT_CUTOFF:-4.2}"
+MIN_SC_LIG_CONTACTS="${MIN_SC_LIG_CONTACTS:-2}"
+MAX_SC_MIN_DIST="${MAX_SC_MIN_DIST:-4.5}"
+SC_CONTACT_SCORE_W="${SC_CONTACT_SCORE_W:-0.05}"
 
 {
   echo "[run] ligand: $LIG"
@@ -24,6 +28,8 @@ CLASH_TOL="${CLASH_TOL:-0.5}"
   echo "[run] vdx: $VDX"
   echo "[run] out_prefix: $OUT_PREFIX"
   echo "[run] TOP_PER_SITE=$TOP_PER_SITE CHUNK_SIZE=$CHUNK_SIZE CLASH_TOL=$CLASH_TOL"
+  echo "[run] SC_CONTACT_CUTOFF=$SC_CONTACT_CUTOFF MIN_SC_LIG_CONTACTS=$MIN_SC_LIG_CONTACTS"
+  echo "[run] MAX_SC_MIN_DIST=$MAX_SC_MIN_DIST SC_CONTACT_SCORE_W=$SC_CONTACT_SCORE_W"
   uv sync -p 3.11 --extra rdkit
   uv run -p 3.11 python "${ROOT}/scripts/04_candidates/01_generate_candidates.py" \
     --ligand-pdb "$LIG" \
@@ -34,6 +40,9 @@ CLASH_TOL="${CLASH_TOL:-0.5}"
     --chunk-size "$CHUNK_SIZE" \
     --top-per-site "$TOP_PER_SITE" \
     --clash-tol "$CLASH_TOL" \
+    --sidechain-contact-cutoff "$SC_CONTACT_CUTOFF" \
+    --min-sidechain-ligand-contacts "$MIN_SC_LIG_CONTACTS" \
+    --max-sidechain-min-dist "$MAX_SC_MIN_DIST" \
+    --score-weight-contact-count "$SC_CONTACT_SCORE_W" \
     --require-full-coverage
 } 2>&1 | tee "$LOG"
-

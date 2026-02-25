@@ -102,6 +102,12 @@ Non-debug run (expected to be heavier; intended for `dg`):
 TOP_PER_SITE=2000 bash scripts/04_candidates/02_run_mtx_candidates.sh
 ```
 
+Pocket-quality knobs (enabled by default in wrappers):
+- `MIN_SC_LIG_CONTACTS` (default `2`): minimum number of ligand heavy atoms contacted by residue sidechain.
+- `MAX_SC_MIN_DIST` (default `4.5`): maximum closest sidechain-heavy to ligand-heavy distance.
+- `SC_CONTACT_CUTOFF` (default `4.2`): contact distance cutoff used to count ligand contacts.
+- `SC_CONTACT_SCORE_W` (default `0.05`): score bonus weight per contacted ligand atom.
+
 ### 5) Solve deterministic 8–15 residue motif (MVP)
 
 ```bash
@@ -117,6 +123,10 @@ Non-debug run:
 ```bash
 TIME_LIMIT_S=300 bash scripts/05_solver/02_run_mtx_solver.sh
 ```
+
+Pocket-completeness knobs (enabled by default in wrappers):
+- `MIN_LIG_CONTACT_FRACTION` (default `0.35`): require motif to contact at least this fraction of ligand heavy atoms.
+- `MIN_LIG_CONTACT_ATOMS` (default `0`): optional absolute lower bound on contacted ligand heavy atoms.
 
 ### 6) Determinism regression (recommended while iterating)
 
@@ -222,9 +232,10 @@ This repo’s MVP is **vdM-driven candidate placement + deterministic set cover*
    - For each site frame, load the corresponding `vdxform_<cg>.npz`.
    - Compose placement `X_world_stub = X_world_ifg ∘ X_ifg_to_stub`.
    - Fast prefilter by ligand clash with N/CA/C/CB, then compute a **satisfaction bitmask** for the polar atoms assigned to this site.
-   - Apply sidechain-facing filtering and a full-atom ligand clash check.
+   - Apply sidechain-facing filtering, sidechain-ligand contact quality filtering, and a full-atom ligand clash check.
+   - Export per-candidate ligand-contact matrix (`lig_contact_bool`) and sidechain proximity stats for solver-level pocket optimization.
    - Keep top-K per site (deterministic ties by `vdm_id`).
-5) **Motif solving** (`scripts/05_solver/01_solve_motif.py`): choose 8–15 candidates that cover all polar bits while avoiding residue–residue clashes; write motif PDB.
+5) **Motif solving** (`scripts/05_solver/01_solve_motif.py`): choose 8–15 candidates that cover all polar bits, maximize ligand-contact coverage, and avoid residue–residue clashes; write motif PDB.
 
 ## Session takeaways: recurring problems + what we changed
 

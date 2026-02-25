@@ -15,12 +15,16 @@ LOG="${ROOT}/logs/05_solver/MTX_motif_debug.log"
 
 mkdir -p "$(dirname "$OUT_JSON")" "$(dirname "$OUT_PDB")" "$(dirname "$LOG")"
 
+MIN_LIG_CONTACT_FRACTION="${MIN_LIG_CONTACT_FRACTION:-0.35}"
+MIN_LIG_CONTACT_ATOMS="${MIN_LIG_CONTACT_ATOMS:-0}"
+
 {
   echo "[run] ligand: $LIG"
   echo "[run] candidates: $CAND_NPZ"
   echo "[run] candidates_meta: $CAND_META"
   echo "[run] out_json: $OUT_JSON"
   echo "[run] out_pdb: $OUT_PDB"
+  echo "[run] MIN_LIG_CONTACT_FRACTION=$MIN_LIG_CONTACT_FRACTION MIN_LIG_CONTACT_ATOMS=$MIN_LIG_CONTACT_ATOMS"
   uv sync -p 3.11 --extra rdkit
   uv run -p 3.11 python "${ROOT}/scripts/05_solver/01_solve_motif.py" \
     --candidates-npz "$CAND_NPZ" \
@@ -34,7 +38,9 @@ mkdir -p "$(dirname "$OUT_JSON")" "$(dirname "$OUT_PDB")" "$(dirname "$LOG")"
     --num-workers 1 \
     --grid-size 4.0 \
     --ca-prefilter 8.0 \
-    --clash-tol 0.5
+    --clash-tol 0.5 \
+    --min-ligand-contact-fraction "$MIN_LIG_CONTACT_FRACTION" \
+    --min-ligand-contact-atoms "$MIN_LIG_CONTACT_ATOMS"
 
   uv run -p 3.11 python "${ROOT}/scripts/05_solver/03_validate_motif_polar_satisfaction.py" \
     --polar-sites "${ROOT}/outputs/02_polar_sites/MTX_polar_sites.json" \

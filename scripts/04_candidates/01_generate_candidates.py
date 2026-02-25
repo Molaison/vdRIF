@@ -294,6 +294,54 @@ def _clash_mask_full_fast(
     return ~clash
 
 
+def _sidechain_contact_metrics(
+    world_all: np.ndarray,  # (n,atoms,3)
+    sidechain_idx: list[int],
+    ligand_xyz: np.ndarray,  # (m,3)
+    contact_cutoff: float,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Return per-candidate sidechain-ligand proximity summaries:
+    - min_d2: minimum sidechain-heavy to ligand-heavy squared distance, shape (n,)
+    - contact_count: number of ligand heavy atoms contacted within cutoff, shape (n,)
+    - contact_bool: contact matrix (n,m), True if any sidechain heavy atom contacts ligand atom m
+    """
+    n = int(world_all.shape[0])
+    m = int(ligand_xyz.shape[0])
+    if n == 0:
+        return (
+            np.zeros((0,), dtype=np.float64),
+            np.zeros((0,), dtype=np.int32),
+            np.zeros((0, m), dtype=bool),
+        )
+
+    if not sidechain_idx:
+        return (
+            np.full((n,), float("inf"), dtype=np.float64),
+            np.zeros((n,), dtype=np.int32),
+            np.zeros((n, m), dtype=bool),
+        )
+
+    sc = world_all[:, sidechain_idx, :].astype(np.float64, copy=False)  # (n,s,3)
+    sc_ok = np.isfinite(sc).all(axis=2)  # (n,s)
+    if not np.any(sc_ok):
+        return (
+            np.full((n,), float("inf"), dtype=np.float64),
+            np.zeros((n,), dtype=np.int32),
+            np.zeros((n, m), dtype=bool),
+        )
+
+    d = sc[:, :, None, :] - ligand_xyz[None, None, :, :]  # (n,s,m,3)
+    d2 = np.einsum("nsmj,nsmj->nsm", d, d)
+    d2 = np.where(sc_ok[:, :, None], d2, float("inf"))
+
+    min_d2 = d2.min(axis=(1, 2))
+    cutoff2 = float(contact_cutoff) ** 2
+    contact_bool = (d2 <= cutoff2).any(axis=1)
+    contact_count = contact_bool.sum(axis=1, dtype=np.int32)
+    return min_d2, contact_count, contact_bool
+
+
 @dataclass(frozen=True)
 class Site:
     site_index: int
@@ -435,6 +483,30 @@ def main() -> None:
         default=0.0,
         help="Minimum dot( sidechain_dir , direction-to-ligand-centroid ) to accept a candidate (default 0.0).",
     )
+    ap.add_argument(
+        "--sidechain-contact-cutoff",
+        type=float,
+        default=4.2,
+        help="Cutoff (Angstrom) for counting sidechain-heavy to ligand-heavy contacts (default 4.2).",
+    )
+    ap.add_argument(
+        "--min-sidechain-ligand-contacts",
+        type=int,
+        default=2,
+        help="Reject candidates with fewer than this many contacted ligand heavy atoms (default 2).",
+    )
+    ap.add_argument(
+        "--max-sidechain-min-dist",
+        type=float,
+        default=4.5,
+        help="Reject candidates whose closest sidechain-heavy to ligand-heavy distance exceeds this (default 4.5A).",
+    )
+    ap.add_argument(
+        "--score-weight-contact-count",
+        type=float,
+        default=0.05,
+        help="Add weight * sidechain_contact_count to candidate score (default 0.05).",
+    )
     ap.add_argument("--require-full-coverage", action="store_true")
     args = ap.parse_args()
 
@@ -491,6 +563,9 @@ def main() -> None:
     xform_world_stub_12: list[np.ndarray] = []
     center_atom_xyz_stub: list[np.ndarray] = []
     cluster_number: list[np.int32] = []
+    sidechain_contact_count: list[np.uint8] = []
+    sidechain_min_dist: list[np.float32] = []
+    lig_contact_bool: list[np.ndarray] = []
 
     # Union of polar atoms that are coverable by the site-frames (not geometric satisfaction).
     coverage_union = 0
@@ -624,6 +699,9 @@ def main() -> None:
 
         heap_all: list[tuple[float, int, int, int]] = []  # (score, -vdm_id, idx, cov)
         heaps_by_bit: dict[int, list[tuple[float, int, int, int]]] = {bit: [] for _an, bit, _roles, _pxyz in site_polar}
+        contact_count_by_idx: dict[int, int] = {}
+        min_sc_dist_by_idx: dict[int, float] = {}
+        lig_contact_by_idx: dict[int, np.ndarray] = {}
 
         def _maybe_add_to_heap(h: list[tuple[float, int, int, int]], limit: int, idx: int, sc: float, cov: int) -> None:
             v = int(vdm_ids[idx])
@@ -898,14 +976,51 @@ def main() -> None:
             if not np.any(ok_full):
                 continue
 
+            world_all = world_all[ok_full]
             pass_local = pass_local[ok_full]
             pass_cov = pass_cov[ok_full]
             pass_idx = pass_idx[ok_full]
 
+            min_d2_sc, contact_count_arr, contact_bool_arr = _sidechain_contact_metrics(
+                world_all=world_all,
+                sidechain_idx=sidechain_idx,
+                ligand_xyz=lig_xyz,
+                contact_cutoff=float(args.sidechain_contact_cutoff),
+            )
+            ok_contact = (contact_count_arr >= int(args.min_sidechain_ligand_contacts)) & (
+                min_d2_sc <= float(args.max_sidechain_min_dist) ** 2
+            )
+            if not np.any(ok_contact):
+                continue
+
+            world_all = world_all[ok_contact]
+            pass_local = pass_local[ok_contact]
+            pass_cov = pass_cov[ok_contact]
+            pass_idx = pass_idx[ok_contact]
+            contact_count_arr = contact_count_arr[ok_contact]
+            min_d2_sc = min_d2_sc[ok_contact]
+            contact_bool_arr = contact_bool_arr[ok_contact]
+
             # Finally, score and keep top-k for this site.
-            for idx, cov in zip(pass_idx.tolist(), pass_cov.tolist(), strict=True):
-                sc = float(prior[idx]) + 1e-3 * int(cov).bit_count()
-                maybe_add(int(idx), sc, int(cov))
+            for idx, cov, ccount, min_d2_i, lmask in zip(
+                pass_idx.tolist(),
+                pass_cov.tolist(),
+                contact_count_arr.tolist(),
+                min_d2_sc.tolist(),
+                contact_bool_arr,
+                strict=True,
+            ):
+                idx_i = int(idx)
+                ccount_i = int(ccount)
+                contact_count_by_idx[idx_i] = ccount_i
+                min_sc_dist_by_idx[idx_i] = float(math.sqrt(max(float(min_d2_i), 0.0)))
+                lig_contact_by_idx[idx_i] = np.asarray(lmask, dtype=bool)
+                sc = (
+                    float(prior[idx_i])
+                    + 1e-3 * int(cov).bit_count()
+                    + float(args.score_weight_contact_count) * float(ccount_i)
+                )
+                maybe_add(idx_i, sc, int(cov))
 
         # Emit this site's kept candidates
         if top_k_per_atom > 0:
@@ -933,6 +1048,8 @@ def main() -> None:
         else:
             kept = sorted(heap_all, key=lambda x: (-x[0], -x[1]))
         for sc, neg_vdm, idx, cov in kept:
+            if idx not in contact_count_by_idx or idx not in min_sc_dist_by_idx or idx not in lig_contact_by_idx:
+                raise RuntimeError(f"Internal error: missing sidechain contact metrics for site={site.site_id} idx={idx}")
             cid = _stable_u64(f"{site.site_id}|{int(vdm_ids[idx])}")
             cand_id.append(np.uint64(cid))
             site_index.append(np.uint16(site.site_index))
@@ -941,6 +1058,9 @@ def main() -> None:
             score.append(np.float32(sc))
             cover_mask.append(np.uint16(cov))
             cluster_number.append(np.int32(cluster_number_i32[idx]))
+            sidechain_contact_count.append(np.uint8(min(contact_count_by_idx[idx], 255)))
+            sidechain_min_dist.append(np.float32(min_sc_dist_by_idx[idx]))
+            lig_contact_bool.append(lig_contact_by_idx[idx].astype(bool, copy=False))
             satisfied_union |= int(cov)
 
             # Compute world stub xform12 for output
@@ -981,6 +1101,9 @@ def main() -> None:
     score_arr = np.array([score[i] for i in keep_idx], dtype=np.float32)
     cover_arr = np.array([cover_mask[i] for i in keep_idx], dtype=np.uint16)
     cluster_number_arr = np.array([cluster_number[i] for i in keep_idx], dtype=np.int32)
+    sidechain_contact_count_arr = np.array([sidechain_contact_count[i] for i in keep_idx], dtype=np.uint8)
+    sidechain_min_dist_arr = np.array([sidechain_min_dist[i] for i in keep_idx], dtype=np.float32)
+    lig_contact_arr = np.stack([lig_contact_bool[i] for i in keep_idx], axis=0).astype(bool)
     xw12_arr = np.stack([xform_world_stub_12[i] for i in keep_idx], axis=0).astype(np.float32)
     center_stub_arr = np.stack([center_atom_xyz_stub[i] for i in keep_idx], axis=0).astype(np.float32)
 
@@ -996,6 +1119,9 @@ def main() -> None:
         aa3=aa3_arr,
         score_f32=score_arr,
         cover_mask_u16=cover_arr,
+        sidechain_contact_count_u8=sidechain_contact_count_arr,
+        sidechain_min_dist_f32=sidechain_min_dist_arr,
+        lig_contact_bool=lig_contact_arr,
         xform_world_stub_12_f32=xw12_arr,
         center_atom_xyz_stub_f32=center_stub_arr,
     )
@@ -1010,7 +1136,12 @@ def main() -> None:
         "params": {
             "chunk_size": int(args.chunk_size),
             "top_per_site": int(args.top_per_site),
+            "top_per_site_per_atom": int(args.top_per_site_per_atom),
             "clash_tol": float(args.clash_tol),
+            "sidechain_contact_cutoff": float(args.sidechain_contact_cutoff),
+            "min_sidechain_ligand_contacts": int(args.min_sidechain_ligand_contacts),
+            "max_sidechain_min_dist": float(args.max_sidechain_min_dist),
+            "score_weight_contact_count": float(args.score_weight_contact_count),
         },
         "ligand": {"n_heavy_atoms": int(lig_xyz.shape[0]), "heavy_atom_names": lig_names},
         "ligand_donor_h_source": str(lig_donor_h_source),

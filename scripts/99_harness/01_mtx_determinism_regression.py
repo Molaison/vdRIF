@@ -47,6 +47,12 @@ def main() -> None:
     ap.add_argument("--tag", type=str, default=str(int(time.time())))
     ap.add_argument("--top-per-site", type=int, default=200)
     ap.add_argument("--time-limit-s", type=float, default=30.0)
+    ap.add_argument("--sidechain-contact-cutoff", type=float, default=4.2)
+    ap.add_argument("--min-sidechain-ligand-contacts", type=int, default=2)
+    ap.add_argument("--max-sidechain-min-dist", type=float, default=4.5)
+    ap.add_argument("--score-weight-contact-count", type=float, default=0.05)
+    ap.add_argument("--min-ligand-contact-fraction", type=float, default=0.35)
+    ap.add_argument("--min-ligand-contact-atoms", type=int, default=0)
     ap.add_argument(
         "--solver",
         type=str,
@@ -137,6 +143,14 @@ def main() -> None:
                 "0.2",
                 "--min-sidechain-centroid-dot",
                 "0.0",
+                "--sidechain-contact-cutoff",
+                str(args.sidechain_contact_cutoff),
+                "--min-sidechain-ligand-contacts",
+                str(args.min_sidechain_ligand_contacts),
+                "--max-sidechain-min-dist",
+                str(args.max_sidechain_min_dist),
+                "--score-weight-contact-count",
+                str(args.score_weight_contact_count),
                 "--require-full-coverage",
             ]
         )
@@ -189,6 +203,10 @@ def main() -> None:
                 "12.0",
                 "--clash-tol",
                 "0.5",
+                "--min-ligand-contact-fraction",
+                str(args.min_ligand_contact_fraction),
+                "--min-ligand-contact-atoms",
+                str(args.min_ligand_contact_atoms),
             ]
         )
         t2 = time.time()
@@ -284,7 +302,16 @@ def main() -> None:
 
     report: dict[str, Any] = {
         "tag": args.tag,
-        "params": {"top_per_site": args.top_per_site, "time_limit_s": args.time_limit_s},
+        "params": {
+            "top_per_site": args.top_per_site,
+            "time_limit_s": args.time_limit_s,
+            "sidechain_contact_cutoff": args.sidechain_contact_cutoff,
+            "min_sidechain_ligand_contacts": args.min_sidechain_ligand_contacts,
+            "max_sidechain_min_dist": args.max_sidechain_min_dist,
+            "score_weight_contact_count": args.score_weight_contact_count,
+            "min_ligand_contact_fraction": args.min_ligand_contact_fraction,
+            "min_ligand_contact_atoms": args.min_ligand_contact_atoms,
+        },
         "stats": {"A": statsA, "B": statsB},
         "checks": checks,
         "deterministic": bool(ok),

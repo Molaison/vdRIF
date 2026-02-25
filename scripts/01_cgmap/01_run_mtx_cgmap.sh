@@ -18,6 +18,7 @@ mkdir -p "$(dirname "${OUT_JSON}")" "$(dirname "${LOG}")"
   echo "vdm_db=${VDM_DB}"
   echo "script=${CGMAP}"
   echo
+  uv sync -p 3.11 --extra rdkit
   uv run -p 3.11 python "${CGMAP}" "${LIGAND_IN}" \
     --format json \
     --vdm-database "${VDM_DB}" \
