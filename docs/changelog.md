@@ -17,6 +17,11 @@
 - Added synthetic smoke harness to verify balanced objective behavior:
   - `scripts/99_harness/05_solver_balanced_objective_smoke.py`
   - `scripts/99_harness/05_run_solver_balanced_objective_smoke.sh`
+- Added MTX balanced-solver sweep harness to rank pocket-completion settings on a fixed candidate set:
+  - `scripts/99_harness/06_mtx_balanced_solver_sweep.py`
+  - `scripts/99_harness/06_run_mtx_balanced_solver_sweep.sh`
+  - uses deterministic evenly-spaced subsampling when `--max-runs` is smaller than full Cartesian combos.
+  - only recommends feasible runs and pre-skips impossible `min_unique_sites` combinations.
 - Fixed `uv sync` bootstrap in clean worktrees by restoring tracked workspace member:
   - added `vendor/openbabel_meta/pyproject.toml` (meta package for `openbabel-wheel==3.1.1.22`)
   - adjusted `.gitignore` to allow this specific path while still ignoring other `vendor/` contents.
