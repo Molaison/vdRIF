@@ -16,6 +16,19 @@
   - `processed/99_harness/non_mtx_cation_validate_20260226-cation-nonmtx-v2/summary.md`
   - Core ligands `GDM/BZA/BTM`: PLIP all satisfied (`3/3` runs).
   - Dropped-cation probe `DZN`: dropped atom `N1` had no PLIP salt-bridge evidence in legacy focus run, so no rule refinement was required.
+- Generalized pocket-knob sweep harness for non-MTX transfer:
+  - `scripts/99_harness/05_mtx_pocket_knob_sweep.py` now accepts `--ligand-tag`, `--ligand-resname`, `--min-res`, `--max-res`, `--ca-prefilter`.
+  - Output naming is no longer hardcoded to MTX.
+- Fixed non-MTX validation blocker in motif satisfaction checker:
+  - `scripts/05_solver/03_validate_motif_polar_satisfaction.py` now supports `--ligand-resname` (default `MTX`) instead of selecting ligand atoms by hardcoded residue name.
+- Added non-MTX pocket-knob aggregate benchmark harness:
+  - `scripts/99_harness/08_non_mtx_pocket_knob_benchmark.py`
+  - `scripts/99_harness/08_run_non_mtx_pocket_knob_benchmark.sh`
+- Executed non-MTX transfer benchmark (prepared ligands `GDM/BZA/BTM`):
+  - `processed/99_harness/non_mtx_pocket_knob_benchmark_20260226-nonmtx-knob-v2/summary.json`
+  - `processed/99_harness/non_mtx_pocket_knob_benchmark_20260226-nonmtx-knob-v2/summary.md`
+  - All three ligands had feasible solutions across the tested knob grid (`4/4` feasible per ligand).
+  - Best shared knob set: `angle=60`, `weight=0.2`, `min_sc=0` (with `min_sc=1` tied on quality/contact).
 
 ## 2026-02-25
 

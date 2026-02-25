@@ -194,6 +194,28 @@ These reports include:
 - old vs new atom-role comparison and dropped cation atoms,
 - dropped-cation probe analysis with PLIP salt-bridge evidence check.
 
+### 10) Benchmark pocket-knob transferability on non-MTX ligands
+
+Run the aggregate benchmark harness (reuses prepared non-MTX ligand assets from step 9 and runs per-ligand knob sweeps):
+
+```bash
+TAG=nonmtx-knob-$(date +%Y%m%d-%H%M%S) \
+bash scripts/99_harness/08_run_non_mtx_pocket_knob_benchmark.sh
+```
+
+Main outputs:
+- `processed/99_harness/non_mtx_pocket_knob_benchmark_<tag>/summary.json`
+- `processed/99_harness/non_mtx_pocket_knob_benchmark_<tag>/summary.md`
+
+Defaults:
+- ligands: `GDM,BZA,BTM`
+- sweep grid: `angle=60`, `weight=0.0,0.2`, `min_sc=0,1`
+- prepared assets root: `processed/99_harness/non_mtx_cation_validate_20260226-cation-nonmtx-v2/ligands`
+
+Important:
+- `scripts/99_harness/05_mtx_pocket_knob_sweep.py` now supports non-MTX inputs via `--ligand-tag` and `--ligand-resname`.
+- `scripts/05_solver/03_validate_motif_polar_satisfaction.py` now accepts `--ligand-resname`; pass the ligand residue name whenever motif PDB is not MTX.
+
 ## Environment notes (important)
 
 - This workspace’s system `python3` is 3.6.8, and the system RDKit is broken (missing FreeINCHI symbols).

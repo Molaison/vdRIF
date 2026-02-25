@@ -55,7 +55,7 @@ def _py_cmd(python_bin: str, script: Path, *args: str) -> list[str]:
 def main() -> None:
     ap = argparse.ArgumentParser(
         description=(
-            "Sweep MTX pocket-quality knobs on vdM candidate generation + motif solve, "
+            "Sweep pocket-quality knobs on vdM candidate generation + motif solve, "
             "and summarize feasibility/quality/runtime."
         )
     )
@@ -72,10 +72,15 @@ def main() -> None:
         help="Directory containing per-cg vdxform_<cg>.npz files.",
     )
     ap.add_argument("--solver", type=str, default="greedy", choices=["cp_sat", "greedy"])
+    ap.add_argument("--ligand-tag", type=str, default="MTX", help="Prefix for output filenames.")
+    ap.add_argument("--ligand-resname", type=str, default="MTX", help="Residue name used in clash validators.")
     ap.add_argument("--top-per-site", type=int, default=200)
     ap.add_argument("--top-per-site-per-atom", type=int, default=50)
     ap.add_argument("--chunk-size", type=int, default=5000)
     ap.add_argument("--time-limit-s", type=float, default=120.0)
+    ap.add_argument("--min-res", type=int, default=8)
+    ap.add_argument("--max-res", type=int, default=15)
+    ap.add_argument("--ca-prefilter", type=float, default=8.0)
     ap.add_argument("--clash-tol", type=float, default=0.5)
     ap.add_argument("--allow-backbone-hbonds", action="store_true", default=True)
     ap.add_argument("--acceptor-model", type=str, default="plip", choices=["legacy", "plip"])
@@ -109,6 +114,8 @@ def main() -> None:
     else:
         default_py = root / ".venv" / "bin" / "python"
         python_bin = str(default_py if default_py.exists() else Path("python3"))
+    ligand_tag = str(args.ligand_tag).strip() or "MTX"
+    ligand_resname = str(args.ligand_resname).strip() or "MTX"
     outdir = root / "processed/99_harness" / f"mtx_pocket_knob_sweep_{args.tag}"
     runs_dir = outdir / "runs"
     runs_dir.mkdir(parents=True, exist_ok=True)
@@ -123,9 +130,24 @@ def main() -> None:
             vdx / cg / f"vdxform_{cg}.npz",
             hint_cmd="bash scripts/03_vdxform/03_run_mtx_needed_cgs_debug.sh (debug) or 02_run_mtx_needed_cgs.sh (full)",
         )
-    _ensure_file(ligand, hint_cmd="Place MTX at inputs/01_cgmap/MTX.pdb")
-    _ensure_file(polar, hint_cmd="bash scripts/02_polar_sites/01_run_mtx_polar_sites.sh")
-    _ensure_file(frames, hint_cmd="bash scripts/02_polar_sites/01_run_mtx_polar_sites.sh")
+    _ensure_file(
+        ligand,
+        hint_cmd="Set --ligand-pdb to an existing ligand PDB (default: inputs/01_cgmap/MTX.pdb).",
+    )
+    _ensure_file(
+        polar,
+        hint_cmd=(
+            "Set --polar-sites to an existing polar-sites JSON "
+            "(for MTX defaults: bash scripts/02_polar_sites/01_run_mtx_polar_sites.sh)."
+        ),
+    )
+    _ensure_file(
+        frames,
+        hint_cmd=(
+            "Set --site-frames to an existing site-frames JSON "
+            "(for MTX defaults: bash scripts/02_polar_sites/01_run_mtx_polar_sites.sh)."
+        ),
+    )
 
     candidate_py = root / "scripts/04_candidates/01_generate_candidates.py"
     solver_py = root / "scripts/05_solver/01_solve_motif.py"
@@ -158,12 +180,12 @@ def main() -> None:
         run_dir = runs_dir / run_id
         run_dir.mkdir(parents=True, exist_ok=True)
 
-        cand_prefix = run_dir / "MTX_candidates"
-        motif_json = run_dir / "MTX_motif.json"
-        motif_pdb = run_dir / "MTX_motif.pdb"
-        motif_val_json = run_dir / "MTX_motif_validation.json"
-        motif_clash_json = run_dir / "MTX_motif_clash_validation.json"
-        motif_internal_clash_json = run_dir / "MTX_motif_internal_clash_validation.json"
+        cand_prefix = run_dir / f"{ligand_tag}_candidates"
+        motif_json = run_dir / f"{ligand_tag}_motif.json"
+        motif_pdb = run_dir / f"{ligand_tag}_motif.pdb"
+        motif_val_json = run_dir / f"{ligand_tag}_motif_validation.json"
+        motif_clash_json = run_dir / f"{ligand_tag}_motif_clash_validation.json"
+        motif_internal_clash_json = run_dir / f"{ligand_tag}_motif_internal_clash_validation.json"
 
         run_record: dict[str, Any] = {
             "run_id": run_id,
@@ -178,7 +200,12 @@ def main() -> None:
                 "top_per_site_per_atom": int(args.top_per_site_per_atom),
                 "chunk_size": int(args.chunk_size),
                 "solver": str(args.solver),
+                "ligand_tag": ligand_tag,
+                "ligand_resname": ligand_resname,
                 "time_limit_s": float(args.time_limit_s),
+                "min_res": int(args.min_res),
+                "max_res": int(args.max_res),
+                "ca_prefilter": float(args.ca_prefilter),
             },
             "paths": {
                 "run_dir": str(run_dir),
@@ -261,9 +288,9 @@ def main() -> None:
                     "--solver",
                     str(args.solver),
                     "--min-res",
-                    "8",
+                    str(int(args.min_res)),
                     "--max-res",
-                    "15",
+                    str(int(args.max_res)),
                     "--time-limit-s",
                     str(float(args.time_limit_s)),
                     "--num-workers",
@@ -271,7 +298,7 @@ def main() -> None:
                     "--grid-size",
                     "4.0",
                     "--ca-prefilter",
-                    "8.0",
+                    str(float(args.ca_prefilter)),
                     "--clash-tol",
                     str(float(args.clash_tol)),
                 ),
@@ -288,6 +315,8 @@ def main() -> None:
                     str(polar),
                     "--motif-pdb",
                     str(motif_pdb),
+                    "--ligand-resname",
+                    str(ligand_resname),
                     "--acceptor-model",
                     str(args.acceptor_model),
                     "-o",
@@ -303,7 +332,7 @@ def main() -> None:
                     "--motif-pdb",
                     str(motif_pdb),
                     "--ligand-resname",
-                    "MTX",
+                    str(ligand_resname),
                     "-o",
                     str(motif_clash_json),
                 ),
@@ -317,7 +346,7 @@ def main() -> None:
                     "--motif-pdb",
                     str(motif_pdb),
                     "--ligand-resname",
-                    "MTX",
+                    str(ligand_resname),
                     "-o",
                     str(motif_internal_clash_json),
                 ),
@@ -420,6 +449,8 @@ def main() -> None:
             "polar": str(polar),
             "site_frames": str(frames),
             "vdxform_dir": str(vdx),
+            "ligand_tag": ligand_tag,
+            "ligand_resname": ligand_resname,
         },
         "sweep": {
             "min_lig_donor_angle_list": min_lig_donor_angles,
@@ -434,9 +465,10 @@ def main() -> None:
     (outdir / "summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
     md_lines = [
-        f"# MTX Pocket Knob Sweep ({args.tag})",
+        f"# {ligand_tag} Pocket Knob Sweep ({args.tag})",
         "",
         f"- outdir: `{outdir}`",
+        f"- ligand_resname: `{ligand_resname}`",
         f"- recommended: `{summary['recommended_run_id']}` (feasible={summary['recommended_feasible']})",
         "",
         "| run_id | feasible | n_candidates | n_selected | all_satisfied | clash_ok | internal_ok | contact_mean | total_s |",
